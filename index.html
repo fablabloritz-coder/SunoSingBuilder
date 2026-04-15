@@ -1696,14 +1696,15 @@ function analyzeSyllablesInLyrics(lyrics) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// MOTEUR IA RIMEUR EMBARQUE — FR_AI v1
+// MOTEUR IA RIMEUR EMBARQUE — FR_AI v2
 // G2P phonetique + vecteurs de traits + quasi-rimes
+// Correctifs v2: e muet vs e accentue, noyau tonique correct
 // Aucune dependance, 100% offline, integre dans le navigateur
 // ═══════════════════════════════════════════════════════════════
 const FR_AI = (() => {
   'use strict';
 
-  // 1. Normalisation graphemique (accents → ASCII, minuscules)
+  // 1a. Normalisation graphemique pour affichage (accents supprimés)
   function norm(w) {
     return (w || '').toLowerCase()
       .replace(/[àâä]/g, 'a').replace(/[éèêë]/g, 'e')
@@ -1713,11 +1714,24 @@ const FR_AI = (() => {
       .replace(/[^a-z]/g, '');
   }
 
-  function isVowelChar(c) { return 'aeiouy'.includes(c || ''); }
+  // 1b. Normalisation G2P : conserve 'E' pour les e accentués (é/è/ê/ë)
+  //     car ils sont TOUJOURS prononcés, contrairement au e muet final
+  function prepG2P(w) {
+    return (w || '').toLowerCase()
+      .replace(/[àâä]/g, 'a')
+      .replace(/[éèêë]/g, 'E')   // E majuscule = e accentué, toujours prononcé
+      .replace(/[îï]/g, 'i').replace(/[ôö]/g, 'o')
+      .replace(/[ûùü]/g, 'u').replace(/ç/g, 's')
+      .replace(/œ/g, 'oe').replace(/æ/g, 'ae')
+      .replace(/[^a-zA-Z]/g, '');
+  }
+
+  // 'E' compte comme voyelle dans le contexte de la séquence (pour nasales etc.)
+  function isVowelChar(c) { return 'aeiouyE'.includes(c || ''); }
 
   // 2. Graphème → Phonème IPA simplifié
   function g2p(raw) {
-    const w = norm(raw);
+    const w = prepG2P(raw);
     if (!w) return [];
     const out = [];
     let i = 0;
@@ -1765,32 +1779,38 @@ const FR_AI = (() => {
       const isLast = (i === L - 1);
       switch (c) {
         case 'a': out.push('a'); break;
-        case 'e': out.push(isLast ? 'ə' : 'ə'); break;
+        // E majuscule = e accentué, toujours prononcé comme [e]
+        case 'E': out.push('e'); break;
+        // e minuscule = potentiellement muet
+        case 'e':
+          if (isLast) break;            // e final → muet (ne rien pousser)
+          out.push('ə');                // e interne → schwa
+          break;
         case 'i': out.push('i'); break;
         case 'o': out.push('ɔ'); break;
         case 'u': out.push('y'); break; // FR u = [y]
         case 'y': out.push('i'); break;
         case 'b': out.push('b'); break;
-        case 'c': out.push('eiys'.includes(w[i+1]||'') ? 's' : 'k'); break;
-        case 'd': if (!isLast) out.push('d'); break;  // d final muet
-        case 'f': if (!isLast) out.push('f'); break;  // f final muet
-        case 'g': out.push('eiys'.includes(w[i+1]||'') ? 'ʒ' : 'g'); break;
-        case 'h': break; // muet
+        case 'c': out.push('EeiIys'.includes(w[i+1]||'') ? 's' : 'k'); break;
+        case 'd': if (!isLast) out.push('d'); break;
+        case 'f': if (!isLast) out.push('f'); break;
+        case 'g': out.push('EeiIys'.includes(w[i+1]||'') ? 'ʒ' : 'g'); break;
+        case 'h': break;
         case 'j': out.push('ʒ'); break;
         case 'k': out.push('k'); break;
-        case 'l': if (!isLast) out.push('l'); break;  // l final souvent muet
+        case 'l': if (!isLast) out.push('l'); break;
         case 'm': out.push('m'); break;
         case 'n': out.push('n'); break;
-        case 'p': if (!isLast) out.push('p'); break;  // p final muet
+        case 'p': if (!isLast) out.push('p'); break;
         case 'q': out.push('k'); break;
         case 'r': out.push('ʀ'); break;
         case 's': {
-          if (isLast) break; // s final muet
+          if (isLast) break;
           const prev = w[i-1]||'', nxt = w[i+1]||'';
           out.push(isVowelChar(prev) && isVowelChar(nxt) ? 'z' : 's');
           break;
         }
-        case 't': if (!isLast) out.push('t'); break;  // t final muet
+        case 't': if (!isLast) out.push('t'); break;
         case 'v': out.push('v'); break;
         case 'w': out.push('v'); break;
         case 'x': if (!isLast) out.push('k','s'); break;
@@ -1802,24 +1822,33 @@ const FR_AI = (() => {
     return out;
   }
 
-  // 3. Noyau rimique = dernière voyelle + consonnes suivantes
+  // 3. Noyau rimique = dernière voyelle TONIQUE + consonnes suivantes
+  //    BUG FIX v2: on remonte au-delà du ə résiduel (e muet interne)
+  //    pour trouver la vraie voyelle tonique finale
   const VOWELS_SET = new Set([
-    'a','ə','i','ɔ','y','u','o','ø','œ','ɛ',
+    'a','e','ə','i','ɔ','y','u','o','ø','œ','ɛ',
     'ɑ̃','ɛ̃','ɔ̃','wa','wɛ̃','jɔ̃','j','ɥi','ij'
   ]);
 
   function nucleus(phonemes) {
-    let last = -1;
-    for (let j = phonemes.length - 1; j >= 0; j--) {
-      if (VOWELS_SET.has(phonemes[j])) { last = j; break; }
+    if (!phonemes.length) return [];
+    // Supprimer les ə finaux résiduels (e muet interne mal découpé)
+    let ph = phonemes;
+    while (ph.length > 1 && ph[ph.length - 1] === 'ə') {
+      ph = ph.slice(0, -1);
     }
-    if (last === -1) return phonemes.slice(-2);
-    return phonemes.slice(last);
+    // Trouver la dernière voyelle tonique
+    let last = -1;
+    for (let j = ph.length - 1; j >= 0; j--) {
+      if (VOWELS_SET.has(ph[j])) { last = j; break; }
+    }
+    if (last === -1) return ph.slice(-2);
+    return ph.slice(last);
   }
 
   // 4. Vecteurs de traits phonémiques [nasal, rond, avant, hauteur, voisé, consonne]
   const PV = {
-    'a':[0,0,0,1,1,0],'ə':[0,0,1,2,1,0],'i':[0,0,1,4,1,0],
+    'a':[0,0,0,1,1,0],'e':[0,0,1,3,1,0],'ə':[0,0,1,2,1,0],'i':[0,0,1,4,1,0],
     'ɔ':[0,1,0,2,1,0],'o':[0,1,0,3,1,0],'y':[0,1,1,4,1,0],
     'u':[0,1,0,4,1,0],'ø':[0,1,1,3,1,0],'œ':[0,1,1,2,1,0],
     'ɛ':[0,0,1,2,1,0],'ɑ̃':[1,0,0,1,1,0],'ɛ̃':[1,0,1,2,1,0],
@@ -1853,7 +1882,17 @@ const FR_AI = (() => {
     return vs * 0.65 + cs * 0.35;
   }
 
-  // 6. Analyser les rimes d'un bloc de paroles
+  // 6. Extraire le mot rimant de la fin de ligne (ignorer la ponctuation)
+  function lastRhymeWord(line) {
+    const words = line.split(/\s+/).filter(Boolean);
+    for (let i = words.length - 1; i >= 0; i--) {
+      const w = words[i].replace(/^[!?.,;:…«»""''—–\-]+|[!?.,;:…«»""''—–\-]+$/g, '');
+      if (w.length > 0) return w;
+    }
+    return '';
+  }
+
+  // 7. Analyser les rimes d'un bloc de paroles
   function detectRhymes(lyrics) {
     const lines = (lyrics || '').split('\n').map(l => l.trim()).filter(Boolean);
     if (!lines.length) return {
@@ -1863,8 +1902,7 @@ const FR_AI = (() => {
     };
 
     const data = lines.map((line, idx) => {
-      const words = line.split(/\s+/).filter(Boolean);
-      const last = words[words.length - 1] || '';
+      const last = lastRhymeWord(line);
       const ph = g2p(last);
       const nc = nucleus(ph);
       const ncKey = nc.join('');
@@ -1907,7 +1945,7 @@ const FR_AI = (() => {
     const nearR = nearPairs.reduce((a, p) => a + p.items.length, 0);
     const score = Math.min(100, Math.round((strictR * 1.0 + nearR * 0.4) / lines.length * 100));
 
-    // Confiance (qualite de l'analyse en fonction des donnees)
+    // Confiance
     const conf = Math.min(95, Math.max(20,
       30
       + Math.min(20, lines.length * 5)
@@ -1925,14 +1963,14 @@ const FR_AI = (() => {
       details: data,
       engine: 'embedded-ai',
       decisionLog: [
-        `IA embarquee: ${lines.length} ligne(s) analysee(s)`,
+        `IA embarquee v2: ${lines.length} ligne(s) analysee(s)`,
         `Rimes exactes: ${strictGroups.length} groupe(s)`,
         `Quasi-rimes: ${nearPairs.length} paire(s) (sim≥0.65)`
       ]
     };
   }
 
-  return { g2p, nucleus, rhymeSim, detectRhymes, version: '1.0' };
+  return { g2p, nucleus, rhymeSim, detectRhymes, version: '2.0' };
 })();
 
 // Pont de compatibilite: detectRhymesInLyrics delegue au moteur IA embarque
@@ -2885,14 +2923,16 @@ function clearRhymeCache() {
 
 function testFrAiInBrowser() {
   const pairs = [
-    ['chanter',  'aimer',   'proche (e)'],
-    ['amour',    'toujours','exacte (uʀ)'],
-    ['nuit',     'vie',     'quasi (i/ɥi)'],
-    ['coeur',    'bonheur', 'exacte (œʀ)'],
-    ['passion',  'chanson', 'quasi (ɔ̃)'],
-    ['lumiere',  'riviere', 'exacte (jɛʀ)'],
-    ['chanter',  'manger',  'proche (e)'],
-    ['preciser', 'devotion','differente']
+    ['masse',    'place',    'exacte (as)'],
+    ['masse',    'passe',    'exacte (as)'],
+    ['masse',    'saccage',  'differente (as vs aʒ)'],
+    ['masse',    'improvise','differente (as vs iz)'],
+    ['précisé',  'passée',   'exacte (e)'],
+    ['précisé',  'dévotion', 'differente (e vs ɔ̃)'],
+    ['chanter',  'aimer',    'exacte (e)'],
+    ['amour',    'toujours', 'exacte (uʀ)'],
+    ['préciser', 'dévotion', 'differente'],
+    ['coeur',    'bonheur',  'exacte (œʀ)']
   ];
   const rows = pairs.map(([w1, w2, expected]) => {
     const sim = FR_AI.rhymeSim(w1, w2);
