@@ -61,10 +61,15 @@ Aucune dependance, aucun build, aucune installation.
   - section trop longue (>16 lignes)
   - absence de chorus
   - cohesion de rimes faible sur sections vocales
+  - metrique syllabique trop irreguliere
 
 - Outils de rimes (dans l'editeur de section):
   - templates de rimes (AABB, ABAB, ABBA, AAAA, etc.)
   - detecteur de rimes (score + groupes de finales)
+- Compteur de syllabes (dans l'editeur de section):
+  - analyse locale heuristique FR (sans API)
+  - syllabes moyennes par ligne
+  - regularite metrique (ecart-type)
 - Estimation de duree de morceau
 - Optimiseur de style prompt (`Wand Style`)
 - Correctif responsive de l'onglet `Apercu Suno` (plus de debordement horizontal)

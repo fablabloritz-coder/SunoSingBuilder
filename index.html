@@ -1112,8 +1112,10 @@ function loadEditor(id) {
         <select id="rhymeTemplateSel">${rhymeOpts}</select>
         <button class="btn small" onclick="applyRhymeTemplate('${id}')">Appliquer trame</button>
         <button class="btn small" onclick="detectRhymeForSection('${id}')">Detecter rimes</button>
+        <button class="btn small" onclick="detectSyllablesForSection('${id}')">Compter syllabes</button>
       </div>
       <div id="rhymeReport" style="margin-top:8px;font-size:.8rem;color:var(--text2)"></div>
+      <div id="syllableReport" style="margin-top:8px;font-size:.8rem;color:var(--text2)"></div>
     </div>
 
     <div style="display:flex;gap:8px;flex-wrap:wrap">
@@ -1125,6 +1127,7 @@ function loadEditor(id) {
   `;
 
   detectRhymeForSection(id, true);
+  detectSyllablesForSection(id, true);
 }
 
 function buildRhymeSkeleton(template) {
@@ -1185,6 +1188,31 @@ function detectRhymeForSection(secId, silent=false) {
   `;
 
   if (!silent) toast(`Analyse rimes: ${result.score}/100`);
+}
+
+function detectSyllablesForSection(secId, silent=false) {
+  const sec = sectionById(secId);
+  const out = document.getElementById('syllableReport');
+  if (!sec || !out) return;
+
+  const result = analyzeSyllablesInLyrics(sec.lyrics || '');
+  if (!result.linesCount) {
+    out.innerHTML = '<span style="color:var(--text3)">Aucune ligne analysee pour les syllabes.</span>';
+    if (!silent) toast('Aucune ligne a analyser', 'info');
+    return;
+  }
+
+  const details = result.perLine.slice(0, 6).map(x => `L${x.index}:${x.syllables}`).join(' • ');
+  const regularity = result.stddev <= 2.5 ? 'Bonne' : (result.stddev <= 4 ? 'Moyenne' : 'Faible');
+  const regColor = result.stddev <= 2.5 ? 'var(--green)' : (result.stddev <= 4 ? 'var(--yellow)' : 'var(--red)');
+
+  out.innerHTML = `
+    <div>Syllabes moyennes/ligne: <strong>${result.average.toFixed(1)}</strong> (${result.linesCount} lignes)</div>
+    <div style="margin-top:4px">Regularite metrique: <strong style="color:${regColor}">${regularity}</strong> (ecart-type ${result.stddev.toFixed(1)})</div>
+    <div style="margin-top:4px;color:var(--text3)">Apercu: ${escHtml(details)}${result.perLine.length > 6 ? ' ...' : ''}</div>
+  `;
+
+  if (!silent) toast(`Analyse syllabes: ${result.average.toFixed(1)} / ligne`);
 }
 
 function updateSec(id, field, value) {
@@ -1295,6 +1323,63 @@ function normalizeWordForRhyme(word) {
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/[^a-z0-9]/g, '');
+}
+
+function normalizeWordForSyllables(word) {
+  return (word || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z']/g, '');
+}
+
+// Heuristique locale FR: pas parfaite, mais robuste sans API externe.
+function countSyllablesFrWord(word) {
+  let w = normalizeWordForSyllables(word);
+  if (!w) return 0;
+
+  w = w.replace(/qu/g, 'k');
+  w = w.replace(/gu([ei])/g, 'g$1');
+
+  // E muet final frequemment non prononce.
+  if (w.length > 2) w = w.replace(/(e|es|ent)$/g, '');
+
+  const groups = w.match(/[aeiouy]+/g);
+  let count = groups ? groups.length : 0;
+
+  // Ajustements frequents FR.
+  if (/ion$/.test(w)) count += 1;
+  if (/ien$|ienne$/.test(w)) count += 1;
+
+  return Math.max(1, count);
+}
+
+function countSyllablesFrLine(line) {
+  const words = (line || '').split(/\s+/).filter(Boolean);
+  return words.reduce((acc, w) => acc + countSyllablesFrWord(w), 0);
+}
+
+function analyzeSyllablesInLyrics(lyrics) {
+  const lines = (lyrics || '').split('\n').map(l => l.trim()).filter(Boolean);
+  const perLine = lines.map((line, idx) => ({
+    index: idx + 1,
+    line,
+    syllables: countSyllablesFrLine(line)
+  }));
+
+  const values = perLine.map(x => x.syllables);
+  const total = values.reduce((a, b) => a + b, 0);
+  const avg = values.length ? total / values.length : 0;
+  const variance = values.length ? values.reduce((acc, v) => acc + Math.pow(v - avg, 2), 0) / values.length : 0;
+  const stddev = Math.sqrt(variance);
+
+  return {
+    linesCount: lines.length,
+    perLine,
+    total,
+    average: avg,
+    stddev
+  };
 }
 
 function rhymeKey(word) {
@@ -1535,6 +1620,7 @@ function detectCompatibilityIssues() {
   project.sections.forEach((sec, idx) => {
     const where = `${idx + 1}. ${sec.sectionType}${sec.number ? ' ' + sec.number : ''}`;
     const rhymeInfo = detectRhymesInLyrics(sec.lyrics || '');
+    const syllInfo = analyzeSyllablesInLyrics(sec.lyrics || '');
 
     if (sec.assignment === 'instrumental') {
       if (sec.lyrics && sec.lyrics.trim()) {
@@ -1555,6 +1641,10 @@ function detectCompatibilityIssues() {
 
     if (rhymeInfo.linesCount >= 4 && rhymeInfo.score < 20 && sec.assignment !== 'instrumental') {
       issues.push({level:'warn', code:'low-rhyme-cohesion', sectionId:sec.id, message:`${where}: cohesion de rimes faible (${rhymeInfo.score}/100), impact potentiel sur memorabilite.`});
+    }
+
+    if (syllInfo.linesCount >= 4 && syllInfo.stddev > 4.5 && sec.assignment !== 'instrumental') {
+      issues.push({level:'warn', code:'meter-irregular', sectionId:sec.id, message:`${where}: metrique syllabique irreguliere (ecart-type ${syllInfo.stddev.toFixed(1)}).`});
     }
 
     if (!['all','instrumental','public','mixed'].includes(sec.assignment) && !singerById(sec.assignment)) {
