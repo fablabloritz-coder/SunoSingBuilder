@@ -1418,7 +1418,16 @@ function applyRhymeTemplate(secId) {
   if (!tpl) return;
 
   const hasLyrics = sec.lyrics && sec.lyrics.trim();
-  if (hasLyrics && !confirm('Remplacer les paroles de cette section par une trame de rimes ?')) return;
+  if (hasLyrics) {
+    // Ne pas ecraser les paroles existantes: afficher le schema attendu dans le rapport
+    const out = document.getElementById('rhymeReport');
+    if (out) {
+      const schemaHtml = tpl.pattern.map((l, i) => `<span class="pill">L${i+1}: <strong>${l}</strong></span>`).join(' ');
+      out.innerHTML = `<div class="prosody-box"><div class="prosody-head"><strong>Schema ${tpl.id}</strong><span class="prosody-badge">${tpl.label}</span></div><div class="prosody-lines" style="margin-top:4px">${schemaHtml}</div><div style="margin-top:6px;color:var(--text3);font-size:.75rem">Paroles existantes conservees. Effacez-les manuellement pour appliquer la trame vierge.</div></div>`;
+    }
+    toast(`Schema ${tpl.id} affiche — paroles existantes preservees`, 'info');
+    return;
+  }
 
   pushUndo();
   sec.lyrics = buildRhymeSkeleton(tpl);
@@ -1846,40 +1855,56 @@ const FR_AI = (() => {
     return ph.slice(last);
   }
 
-  // 4. Vecteurs de traits phonémiques [nasal, rond, avant, hauteur, voisé, consonne]
-  const PV = {
-    'a':[0,0,0,1,1,0],'e':[0,0,1,3,1,0],'ə':[0,0,1,2,1,0],'i':[0,0,1,4,1,0],
-    'ɔ':[0,1,0,2,1,0],'o':[0,1,0,3,1,0],'y':[0,1,1,4,1,0],
-    'u':[0,1,0,4,1,0],'ø':[0,1,1,3,1,0],'œ':[0,1,1,2,1,0],
-    'ɛ':[0,0,1,2,1,0],'ɑ̃':[1,0,0,1,1,0],'ɛ̃':[1,0,1,2,1,0],
-    'ɔ̃':[1,1,0,2,1,0],'wa':[0,0,0,1,1,0],'wɛ̃':[1,0,0,2,1,0],
-    'jɔ̃':[1,1,0,2,1,0],'j':[0,0,1,0,1,1],'ɥi':[0,1,1,4,1,0],'ij':[0,0,1,4,1,0],
-    'b':[0,0,0,0,1,1],'p':[0,0,0,0,0,1],'d':[0,0,1,0,1,1],'t':[0,0,1,0,0,1],
-    'g':[0,0,0,0,1,1],'k':[0,0,0,0,0,1],'f':[0,0,0,0,0,1],'v':[0,0,0,0,1,1],
-    's':[0,0,1,0,0,1],'z':[0,0,1,0,1,1],'ʃ':[0,0,0,0,0,1],'ʒ':[0,0,0,0,1,1],
-    'ʀ':[0,0,0,0,1,1],'l':[0,0,1,0,1,1],'m':[1,0,0,0,1,1],'n':[1,0,1,0,1,1],
-    'ɲ':[1,0,1,0,1,1],'w':[0,1,0,0,1,1]
+  // 4. Matrice de similarite vocalique FR calibree sur la phonologie reelle
+  //    Remplace les vecteurs cosinus generiques: 'a'~'e' etait 0.85, ici 0.30
+  const VOWEL_SIM_TABLE = {
+    'a':  {'a':1.0,'ɛ':0.40,'e':0.30,'ə':0.35,'ɑ̃':0.50,'ɔ':0.35,'wa':0.45,'ɔ̃':0.20,'ɛ̃':0.20},
+    'e':  {'e':1.0,'ɛ':0.78,'ø':0.68,'ə':0.68,'i':0.50,'y':0.45,'ɛ̃':0.30,'a':0.30},
+    'ɛ':  {'ɛ':1.0,'e':0.78,'ə':0.65,'œ':0.60,'ɛ̃':0.52,'a':0.40,'i':0.40},
+    'i':  {'i':1.0,'ij':0.90,'ɥi':0.75,'y':0.50,'e':0.50,'ɛ':0.40},
+    'ɔ':  {'ɔ':1.0,'o':0.78,'ɔ̃':0.52,'wa':0.45,'a':0.35,'u':0.30},
+    'o':  {'o':1.0,'ɔ':0.78,'ø':0.65,'u':0.55},
+    'u':  {'u':1.0,'y':0.60,'o':0.55,'ɔ':0.30},
+    'y':  {'y':1.0,'u':0.60,'ø':0.72,'i':0.50,'ɥi':0.65},
+    'ø':  {'ø':1.0,'œ':0.82,'o':0.65,'y':0.72,'e':0.68},
+    'œ':  {'œ':1.0,'ø':0.82,'ɛ':0.60,'ə':0.62},
+    'ə':  {'ə':1.0,'e':0.68,'ɛ':0.65,'œ':0.62},
+    'ɑ̃':  {'ɑ̃':1.0,'ɔ̃':0.52,'ɛ̃':0.48,'a':0.50},
+    'ɛ̃':  {'ɛ̃':1.0,'wɛ̃':0.78,'ɑ̃':0.48,'ɔ̃':0.42,'ɛ':0.52},
+    'ɔ̃':  {'ɔ̃':1.0,'jɔ̃':0.85,'ɑ̃':0.52,'ɛ̃':0.42,'ɔ':0.52},
+    'wa': {'wa':1.0,'a':0.45,'ɔ':0.45},
+    'wɛ̃': {'wɛ̃':1.0,'ɛ̃':0.78},
+    'jɔ̃': {'jɔ̃':1.0,'ɔ̃':0.85},
+    'ij': {'ij':1.0,'i':0.90},
+    'ɥi': {'ɥi':1.0,'i':0.75,'y':0.65}
   };
 
-  function pv(p) { return PV[p] || [0,0,0,0,0,1]; }
-
-  function cosSim(v1, v2) {
-    let dot = 0, m1 = 0, m2 = 0;
-    for (let k = 0; k < v1.length; k++) { dot += v1[k]*v2[k]; m1 += v1[k]*v1[k]; m2 += v2[k]*v2[k]; }
-    return (!m1 || !m2) ? 0 : dot / (Math.sqrt(m1) * Math.sqrt(m2));
+  function vowelSim(v1, v2) {
+    if (!v1 || !v2) return 0;
+    if (v1 === v2) return 1.0;
+    const r1 = VOWEL_SIM_TABLE[v1];
+    if (r1 && r1[v2] !== undefined) return r1[v2];
+    const r2 = VOWEL_SIM_TABLE[v2];
+    if (r2 && r2[v1] !== undefined) return r2[v1];
+    return 0;
   }
 
-  // 5. Similarité de rime entre deux mots (0.0 – 1.0)
+  // 5. Similarite de rime entre deux mots (0.0 – 1.0)
+  //    Regle cle: meme voyelle + coda differente = pas une rime (masse[as] vs saccage[az])
   function rhymeSim(w1, w2) {
     const n1 = nucleus(g2p(w1));
     const n2 = nucleus(g2p(w2));
     if (!n1.length || !n2.length) return 0;
     if (n1.join('') === n2.join('')) return 1.0;
-    // Voyelle principale (poids 0.65) + queue consonantique (0.35)
-    const vs = cosSim(pv(n1[0]), pv(n2[0]));
+    const v1 = n1[0], v2 = n2[0];
+    const vs = vowelSim(v1, v2);
     const t1 = n1.slice(1).join(''), t2 = n2.slice(1).join('');
-    const cs = t1 === t2 ? 1.0 : (t1 === '' || t2 === '') ? 0.4 : 0.1;
-    return vs * 0.65 + cs * 0.35;
+    const codasMatch = t1 === t2;
+    const eitherEmpty = !t1 || !t2;
+    // Voyelles identiques mais codas consonantiques differentes: pas une rime
+    if (vs >= 0.99 && !codasMatch && !eitherEmpty) return 0.15;
+    const cs = codasMatch ? 1.0 : eitherEmpty ? 0.45 : 0.05;
+    return Math.max(0, vs * 0.55 + cs * 0.45);
   }
 
   // 6. Extraire le mot rimant de la fin de ligne (ignorer la ponctuation)
@@ -1920,7 +1945,7 @@ const FR_AI = (() => {
       .filter(([, a]) => a.length >= 2)
       .sort((a, b) => b[1].length - a[1].length);
 
-    // Quasi-rimes (similarité ≥ 0.65, noyaux différents)
+    // Quasi-rimes (similarite >= 0.75, seuil releve pour eviter les faux positifs)
     const nearPairs = [];
     const usedKeys = new Set();
     for (let i = 0; i < data.length; i++) {
@@ -1928,7 +1953,7 @@ const FR_AI = (() => {
         const di = data[i], dj = data[j];
         if (di.strictKey === dj.strictKey) continue;
         const sim = rhymeSim(di.lastWord, dj.lastWord);
-        if (sim >= 0.65) {
+        if (sim >= 0.75) {
           const pKey = [di.strictKey, dj.strictKey].sort().join('|');
           if (!usedKeys.has(pKey)) {
             usedKeys.add(pKey);
@@ -1940,17 +1965,23 @@ const FR_AI = (() => {
     nearPairs.sort((a, b) => b.sim - a.sim);
     const assonanceGroups = nearPairs.slice(0, 8).map(p => [p.key, p.items]);
 
-    // Score global
-    const strictR = strictGroups.reduce((a, [, ar]) => a + ar.length, 0);
-    const nearR = nearPairs.reduce((a, p) => a + p.items.length, 0);
-    const score = Math.min(100, Math.round((strictR * 1.0 + nearR * 0.4) / lines.length * 100));
+    // Score: lignes UNIQUES qui riment (evite l'inflation par accumulation de paires)
+    const rhymedLineSet = new Set();
+    strictGroups.forEach(([, arr]) => arr.forEach(d => rhymedLineSet.add(d.index)));
+    const nearLineSet = new Set();
+    nearPairs.forEach(p => p.items.forEach(d => {
+      if (!rhymedLineSet.has(d.index)) nearLineSet.add(d.index);
+    }));
+    const score = Math.min(100, Math.round(
+      (rhymedLineSet.size + nearLineSet.size * 0.3) / lines.length * 100
+    ));
 
     // Confiance
     const conf = Math.min(95, Math.max(20,
       30
       + Math.min(20, lines.length * 5)
       + (strictGroups.length >= 2 ? 25 : strictGroups.length * 12)
-      + (nearPairs.length >= 1 ? 15 : 0)
+      + (nearPairs.length >= 1 ? 10 : 0)
       - (lines.length < 3 ? 10 : 0)
     ));
 
@@ -1963,9 +1994,9 @@ const FR_AI = (() => {
       details: data,
       engine: 'embedded-ai',
       decisionLog: [
-        `IA embarquee v2: ${lines.length} ligne(s) analysee(s)`,
-        `Rimes exactes: ${strictGroups.length} groupe(s)`,
-        `Quasi-rimes: ${nearPairs.length} paire(s) (sim≥0.65)`
+        `IA v2: ${lines.length} lignes — ${rhymedLineSet.size} riment exactement`,
+        `Quasi-rimes: ${nearLineSet.size} ligne(s) suppl. (sim≥0.75)`,
+        `Score reel: ${rhymedLineSet.size}+${nearLineSet.size}×0.3 / ${lines.length} lignes`
       ]
     };
   }
