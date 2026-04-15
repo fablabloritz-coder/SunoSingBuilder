@@ -1237,10 +1237,13 @@ function detectRhymeForSection(secId, silent=false) {
   }
 
   const qualityClass = result.score >= 60 ? 'good' : (result.score >= 35 ? 'warn' : 'bad');
-  const groupsHtml = result.repeatedGroups.length
-    ? result.repeatedGroups.slice(0, 6).map(([k, arr]) => `<span class="pill">${escHtml(k)} (${arr.length})</span>`).join('')
-    : '<span class="pill">Aucune rime repetee</span>';
-  const lineEnds = result.details.slice(0, 8).map(d => `<span class="pill">L${d.index}: ${escHtml(d.lastWord || '-')} → ${escHtml(d.key || '-')}</span>`).join('');
+  const strictHtml = result.strictGroups.length
+    ? result.strictGroups.slice(0, 6).map(([k, arr]) => `<span class="pill">${escHtml(k)} (${arr.length})</span>`).join('')
+    : '<span class="pill">Aucune rime stricte</span>';
+  const assonanceHtml = result.assonanceGroups.length
+    ? result.assonanceGroups.slice(0, 6).map(([k, arr]) => `<span class="pill">${escHtml(k)} (${arr.length})</span>`).join('')
+    : '<span class="pill">Aucune assonance repetee</span>';
+  const lineEnds = result.details.slice(0, 8).map(d => `<span class="pill">L${d.index}: ${escHtml(d.lastWord || '-')} → ${escHtml(d.strictKey || '-')}</span>`).join('');
 
   out.innerHTML = `
     <div class="prosody-box">
@@ -1249,7 +1252,8 @@ function detectRhymeForSection(secId, silent=false) {
         <span class="prosody-badge ${qualityClass}">Score ${result.score}/100</span>
         <span class="prosody-badge">${result.linesCount} lignes</span>
       </div>
-      <div class="prosody-lines">${groupsHtml}</div>
+      <div class="prosody-lines"><span class="pill">Rime stricte:</span>${strictHtml}</div>
+      <div class="prosody-lines"><span class="pill">Assonance:</span>${assonanceHtml}</div>
       <div class="prosody-lines">${lineEnds}</div>
       <div style="margin-top:6px;color:var(--text3);font-size:.75rem">Astuce SUNO: visez 40-70 pour garder impact et variete.</div>
     </div>
@@ -1468,8 +1472,41 @@ function analyzeSyllablesInLyrics(lyrics) {
   };
 }
 
-function rhymeKey(word) {
+function normalizeForFrenchRhyme(word) {
   const w = normalizeWordForRhyme(word);
+  if (!w) return '';
+
+  // Nettoyage des finales tres souvent muettes.
+  if (w.length > 3) {
+    return w
+      .replace(/(es|s|x)$/g, '')
+      .replace(/(ent)$/g, '');
+  }
+  return w;
+}
+
+function strictRhymeKey(word) {
+  const w = normalizeForFrenchRhyme(word);
+  if (!w) return '';
+
+  // Heuristiques FR pour eviter les faux positifs trop agressifs.
+  if (/(tion|sion|xion)$/.test(w)) return 'ion';
+  if (/(eur|euse)$/.test(w)) return 'eur';
+  if (/(ance|anse|ence|ense)$/.test(w)) return 'ans';
+  if (/(ique)$/.test(w)) return 'ik';
+  if (/(oire|oir)$/.test(w)) return 'war';
+  if (/(eau|au|o)$/.test(w)) return 'o';
+  if (/(ou)$/.test(w)) return 'u';
+  if (/(in|ain|ein|im|aim)$/.test(w)) return 'in';
+  if (/(on|om)$/.test(w)) return 'on';
+  if (/(an|am|en|em)$/.test(w)) return 'an';
+  if (/(er|ez|e)$/.test(w)) return 'e';
+
+  return w.slice(-3);
+}
+
+function assonanceKey(word) {
+  const w = normalizeForFrenchRhyme(word);
   if (!w) return '';
   const vowels = 'aeiouy';
   let idx = -1;
@@ -1479,7 +1516,7 @@ function rhymeKey(word) {
       break;
     }
   }
-  if (idx === -1) return w.slice(-3);
+  if (idx === -1) return w.slice(-2);
   return w.slice(Math.max(0, idx - 1));
 }
 
@@ -1490,28 +1527,49 @@ function detectRhymesInLyrics(lyrics) {
   lines.forEach((line, idx) => {
     const words = line.split(/\s+/).filter(Boolean);
     const last = words.length ? words[words.length - 1] : '';
-    const key = rhymeKey(last);
-    data.push({index: idx + 1, line, lastWord: normalizeWordForRhyme(last), key});
+    const strictKey = strictRhymeKey(last);
+    const vowelKey = assonanceKey(last);
+    data.push({
+      index: idx + 1,
+      line,
+      lastWord: normalizeWordForRhyme(last),
+      strictKey,
+      vowelKey
+    });
   });
 
-  const groups = {};
+  const strictMap = {};
+  const assonanceMap = {};
   data.forEach(d => {
-    if (!d.key) return;
-    if (!groups[d.key]) groups[d.key] = [];
-    groups[d.key].push(d);
+    if (d.strictKey) {
+      if (!strictMap[d.strictKey]) strictMap[d.strictKey] = [];
+      strictMap[d.strictKey].push(d);
+    }
+    if (d.vowelKey) {
+      if (!assonanceMap[d.vowelKey]) assonanceMap[d.vowelKey] = [];
+      assonanceMap[d.vowelKey].push(d);
+    }
   });
 
-  const repeatedGroups = Object.entries(groups)
+  const strictGroups = Object.entries(strictMap)
     .filter(([, arr]) => arr.length >= 2)
     .sort((a, b) => b[1].length - a[1].length);
 
-  const repeatedLines = repeatedGroups.reduce((acc, [, arr]) => acc + arr.length, 0);
-  const score = lines.length ? Math.round((repeatedLines / lines.length) * 100) : 0;
+  const assonanceGroups = Object.entries(assonanceMap)
+    .filter(([, arr]) => arr.length >= 2)
+    .sort((a, b) => b[1].length - a[1].length);
+
+  const strictRepeated = strictGroups.reduce((acc, [, arr]) => acc + arr.length, 0);
+  const assonanceRepeated = assonanceGroups.reduce((acc, [, arr]) => acc + arr.length, 0);
+  const score = lines.length
+    ? Math.round(((strictRepeated + (assonanceRepeated * 0.35)) / lines.length) * 100)
+    : 0;
 
   return {
     linesCount: lines.length,
     score,
-    repeatedGroups,
+    strictGroups,
+    assonanceGroups,
     details: data
   };
 }
