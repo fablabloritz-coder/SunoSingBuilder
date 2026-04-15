@@ -189,7 +189,10 @@ a{color:var(--accent2);text-decoration:none}
 .tab-content.active{display:flex}
 
 /* Preview */
-.preview-toolbar{padding:8px 12px;display:flex;gap:6px;border-bottom:1px solid var(--border)}
+.preview-toolbar{padding:8px 12px;display:flex;gap:6px;border-bottom:1px solid var(--border);flex-wrap:wrap;align-items:center}
+.preview-toolbar .btn{flex:0 0 auto}
+.preview-toolbar .spacer{flex:1 1 auto;min-width:8px}
+.preview-toolbar #previewStats{flex:1 1 100%;text-align:right}
 .preview-area{flex:1;overflow-y:auto;padding:16px;font-family:var(--mono);
   font-size:.85rem;line-height:1.7;white-space:pre-wrap;background:#0a0a14}
 .preview-area .tag{color:#f9e2af;font-weight:700}
@@ -283,6 +286,9 @@ a{color:var(--accent2);text-decoration:none}
   .panel-left{max-height:250px}
   .panel-right{max-height:400px}
 }
+@media(max-width:1200px){
+  .preview-toolbar #previewStats{flex:1 1 100%;text-align:left}
+}
 </style>
 </head>
 <body>
@@ -303,6 +309,7 @@ a{color:var(--accent2);text-decoration:none}
       <button class="btn" onclick="showTemplates()" title="Templates de chanson">&#9776; Templates</button>
       <button class="btn" onclick="importProject()" title="Ctrl+O">&#128194; Ouvrir</button>
       <button class="btn" onclick="saveProject()" title="Ctrl+S">&#128190; Sauver</button>
+      <button class="btn" onclick="exportShareHtml()" title="Exporter une page HTML complete a partager">&#127760; Export HTML</button>
       <button class="btn primary" onclick="exportSuno()" title="Ctrl+E">&#128203; Exporter Suno</button>
       <button class="btn" onclick="showHelp()">? Aide</button>
     </div>
@@ -387,8 +394,9 @@ a{color:var(--accent2);text-decoration:none}
           <button class="btn small primary" onclick="copyPreview()">Copier tout</button>
           <button class="btn small" onclick="copyStrictPreview()">Copier strict</button>
           <button class="btn small" onclick="runCompatibilityCheck()">Diagnostiquer</button>
+          <button class="btn small" onclick="exportShareHtml()">Exporter HTML</button>
           <button class="btn small" onclick="exportSuno()">Exporter .txt</button>
-          <span style="flex:1"></span>
+          <span class="spacer"></span>
           <span id="previewStats" style="font-size:.75rem;color:var(--text3)"></span>
         </div>
         <div class="preview-area" id="previewArea"></div>
@@ -1867,6 +1875,158 @@ function exportSuno() {
   URL.revokeObjectURL(a.href);
   toast(`Exporte pour Suno (${mode === 'strict' ? 'strict' : 'equilibre'})`);
   setStatus(`Fichier exporte pour Suno (.txt, mode ${mode})`);
+}
+
+function formatDateLocal() {
+  try {
+    return new Date().toLocaleString('fr-FR');
+  } catch (e) {
+    return new Date().toString();
+  }
+}
+
+function buildShareHtml() {
+  const title = project.title || 'Chanson sans titre';
+  const style = project.style || '(non renseigne)';
+  const strict = renderSunoTextWithMode('strict');
+  const balanced = renderSunoTextWithMode('balanced');
+  const issues = detectCompatibilityIssues();
+  const score = computeQualityScore(issues.length);
+  const est = estimateDurationSeconds();
+  const mm = Math.floor(est / 60);
+  const ss = String(est % 60).padStart(2, '0');
+  const exportedAt = formatDateLocal();
+
+  const singersHtml = project.singers.length
+    ? project.singers.map((s, i) => `
+      <div class="singer" style="--c:${SINGER_COLORS[i % SINGER_COLORS.length]}">
+        <div class="name">${escHtml(s.name)}</div>
+        <div class="meta">${s.voice_type === 'male' ? 'Homme' : 'Femme'}${s.phonetic ? ' • Phonetique: ' + escHtml(s.phonetic) : ''}${s.description ? ' • ' + escHtml(s.description) : ''}</div>
+      </div>
+    `).join('')
+    : '<p class="muted">Aucun chanteur declare.</p>';
+
+  const sectionsHtml = project.sections.length
+    ? project.sections.map((sec, idx) => {
+        const header = buildHeader(sec, getSelectedExportMode());
+        const info = sectionTypeInfo(sec.sectionType);
+        const moods = (sec.moodTags || []).length ? sec.moodTags.map(t => `<span class="pill">${escHtml(t)}</span>`).join('') : '<span class="muted">Aucun</span>';
+        const assignmentLabel = (() => {
+          if (sec.assignment === 'all') return 'Tous';
+          if (sec.assignment === 'instrumental') return 'Instrumental';
+          if (sec.assignment === 'public') return 'Public';
+          if (sec.assignment === 'mixed') return 'Mixte';
+          const s = singerById(sec.assignment);
+          return s ? s.name : 'Inconnu';
+        })();
+        return `
+          <article class="section">
+            <div class="head">
+              <h3>${idx + 1}. ${escHtml(info.label)}${sec.number ? ' ' + sec.number : ''}</h3>
+              <span class="tag">${escHtml(assignmentLabel)}</span>
+            </div>
+            <div class="meta">Header export: <code>${escHtml(header)}</code></div>
+            <div class="meta">Performance: <strong>${escHtml(sec.performanceTag || '(aucune)')}</strong></div>
+            <div class="moods">${moods}</div>
+            ${sec.spokenLine ? `<div class="spoken">Ligne parlee: "${escHtml(sec.spokenLine)}"</div>` : ''}
+            <pre>${escHtml(sec.lyrics || '(pas de paroles)')}</pre>
+          </article>
+        `;
+      }).join('')
+    : '<p class="muted">Aucune section.</p>';
+
+  const issuesHtml = issues.length
+    ? `<ul>${issues.map(i => `<li><strong>${i.level === 'error' ? 'Erreur' : 'Avertissement'}:</strong> ${escHtml(i.message)}</li>`).join('')}</ul>`
+    : '<p class="ok">Aucune anomalie detectee.</p>';
+
+  return `<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${escHtml(title)} - Suno Share</title>
+  <style>
+    :root{--bg:#0b1020;--card:#141b35;--text:#e6ebff;--muted:#97a1cc;--line:#2a3563;--acc:#7c8cff;--ok:#22c55e;--warn:#eab308}
+    *{box-sizing:border-box} body{margin:0;padding:24px;font-family:Segoe UI,Arial,sans-serif;background:linear-gradient(170deg,#0b1020,#101834);color:var(--text)}
+    .wrap{max-width:1100px;margin:0 auto;display:grid;gap:16px}
+    .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px}
+    h1,h2,h3{margin:0 0 8px} h1{font-size:1.5rem} h2{font-size:1.1rem;color:#c5ceff}
+    .muted{color:var(--muted)} .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}
+    .kv{display:grid;gap:6px} .kv .k{font-size:.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
+    .kv .v{font-weight:600}
+    pre{white-space:pre-wrap;word-break:break-word;background:#090e20;border:1px solid var(--line);border-radius:10px;padding:12px;font-family:Consolas,monospace;font-size:.85rem;line-height:1.55}
+    code{font-family:Consolas,monospace;color:#c8d4ff}
+    .singer{border-left:4px solid var(--c,#7c8cff);padding:8px 10px;background:#0f1630;border-radius:8px;margin:8px 0}
+    .singer .name{font-weight:700}
+    .singer .meta{font-size:.85rem;color:var(--muted)}
+    .section{border:1px solid var(--line);border-radius:10px;padding:12px;background:#0f1630;margin:10px 0}
+    .section .head{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+    .section .tag{font-size:.72rem;padding:3px 8px;border-radius:999px;background:#1c2852;color:#cfd7ff}
+    .section .meta{font-size:.84rem;color:var(--muted);margin:6px 0}
+    .moods{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}
+    .pill{font-size:.72rem;padding:3px 8px;border-radius:999px;background:#193844;color:#7fe0ff}
+    .spoken{font-size:.86rem;color:#ffd08a;margin:8px 0}
+    .ok{color:var(--ok);font-weight:700}
+    .score{display:inline-block;padding:4px 10px;border-radius:8px;background:#1c2852;color:#dbe2ff;font-weight:700}
+    @media(max-width:700px){body{padding:12px}}
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <section class="card">
+      <h1>${escHtml(title)}</h1>
+      <p class="muted">Export partage genere le ${escHtml(exportedAt)}.</p>
+      <div class="grid">
+        <div class="kv"><div class="k">Style</div><div class="v">${escHtml(style)}</div></div>
+        <div class="kv"><div class="k">Mode export courant</div><div class="v">${escHtml(getSelectedExportMode())}</div></div>
+        <div class="kv"><div class="k">Chanteurs</div><div class="v">${project.singers.length}</div></div>
+        <div class="kv"><div class="k">Sections</div><div class="v">${project.sections.length}</div></div>
+        <div class="kv"><div class="k">Duree estimee</div><div class="v">~${mm}:${ss}</div></div>
+        <div class="kv"><div class="k">Score qualite</div><div class="v"><span class="score">${score}/100</span></div></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Chanteurs</h2>
+      ${singersHtml}
+    </section>
+
+    <section class="card">
+      <h2>Sections detaillees</h2>
+      ${sectionsHtml}
+    </section>
+
+    <section class="card">
+      <h2>Prompt Suno (equilibre)</h2>
+      <pre>${escHtml(balanced || '(vide)')}</pre>
+      <h2 style="margin-top:12px">Prompt Suno (strict)</h2>
+      <pre>${escHtml(strict || '(vide)')}</pre>
+    </section>
+
+    <section class="card">
+      <h2>Diagnostic compatibilite</h2>
+      ${issuesHtml}
+    </section>
+
+    <section class="card">
+      <h2>Projet JSON (archive)</h2>
+      <pre>${escHtml(JSON.stringify(project, null, 2))}</pre>
+    </section>
+  </main>
+</body>
+</html>`;
+}
+
+function exportShareHtml() {
+  const html = buildShareHtml();
+  const blob = new Blob([html], {type: 'text/html;charset=utf-8'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = (project.title || 'chanson') + '_share.html';
+  a.click();
+  URL.revokeObjectURL(a.href);
+  toast('Export HTML de partage genere');
+  setStatus('Fichier HTML de partage exporte');
 }
 
 document.getElementById('exportMode').addEventListener('change', () => {

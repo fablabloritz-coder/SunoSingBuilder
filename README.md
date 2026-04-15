@@ -25,6 +25,7 @@ Aucune dependance, aucun build, aucune installation.
 - Editeur de paroles par section
 - Apercu Suno colore en temps reel
 - Export `.txt` pour Suno
+- Export HTML de partage (`*_share.html`) avec toutes les informations de la chanson
 - Sauvegarde / ouverture projet `.json`
 - Import `.txt` existant
 - Auto-save localStorage
@@ -43,6 +44,7 @@ Aucune dependance, aucun build, aucune installation.
 - Diagnostic compatibilite manuel
 - Estimation de duree de morceau
 - Optimiseur de style prompt (`Wand Style`)
+- Correctif responsive de l'onglet `Apercu Suno` (plus de debordement horizontal)
 
 ## Demarrage
 
@@ -51,7 +53,7 @@ Aucune dependance, aucun build, aucune installation.
 3. Appliquer un template (optionnel).
 4. Ecrire/assigner les sections.
 5. Verifier `Apercu Suno` et `Qualite`.
-6. Exporter en `.txt` pour Suno.
+6. Exporter en `.txt` pour Suno ou en `.html` pour partage Discord.
 
 ## Raccourcis clavier
 
