@@ -26,6 +26,7 @@ Aucune dependance, aucun build, aucune installation.
 - Apercu Suno colore en temps reel
 - Export `.txt` pour Suno
 - Export HTML de partage (`*_share.html`) avec toutes les informations de la chanson
+- Export Markdown Discord (`*_discord.md`) avec prompts, stats et diagnostic
 - Sauvegarde / ouverture projet `.json`
 - Import `.txt` existant
 - Auto-save localStorage
@@ -42,10 +43,12 @@ Aucune dependance, aucun build, aucune installation.
   - liste des erreurs / avertissements
   - auto-fix sur incoherences courantes
 - Onglet `Studio`:
+  - workflow presets preconfigures (duo pop, rap battle, epic choir, ballade acoustique)
   - snapshots de versions (sauvegarde / chargement / suppression)
   - operations batch (assignation et tags d'ambiance par type de section)
   - nettoyage global des paroles
   - normalisation des sections instrumentales
+  - statistiques vocales par chanteur (sections / lignes / mots)
 - Diagnostic compatibilite manuel
 - Estimation de duree de morceau
 - Optimiseur de style prompt (`Wand Style`)
@@ -66,6 +69,7 @@ Aucune dependance, aucun build, aucune installation.
 - `Ctrl+S` : sauvegarder le projet JSON
 - `Ctrl+O` : ouvrir un projet
 - `Ctrl+E` : exporter pour Suno
+- `Ctrl+Shift+S` : sauvegarder un snapshot Studio
 - `Ctrl+Z` : annuler
 - `Ctrl+Y` : retablir
 - `Delete` : supprimer la section selectionnee

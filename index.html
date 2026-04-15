@@ -321,6 +321,7 @@ a{color:var(--accent2);text-decoration:none}
       <button class="btn" onclick="importProject()" title="Ctrl+O">&#128194; Ouvrir</button>
       <button class="btn" onclick="saveProject()" title="Ctrl+S">&#128190; Sauver</button>
       <button class="btn" onclick="exportShareHtml()" title="Exporter une page HTML complete a partager">&#127760; Export HTML</button>
+      <button class="btn" onclick="exportDiscordMarkdown()" title="Exporter un resume markdown pour Discord"># Export MD</button>
       <button class="btn primary" onclick="exportSuno()" title="Ctrl+E">&#128203; Exporter Suno</button>
       <button class="btn" onclick="showHelp()">? Aide</button>
     </div>
@@ -564,6 +565,7 @@ function setupKeyboard() {
     if (e.ctrlKey && e.key === 'o') { e.preventDefault(); importProject(); }
     if (e.ctrlKey && e.key === 'z') { e.preventDefault(); undo(); }
     if (e.ctrlKey && e.key === 'y') { e.preventDefault(); redo(); }
+    if (e.ctrlKey && e.shiftKey && (e.key === 'S' || e.key === 's')) { e.preventDefault(); saveSnapshot(); }
     if (e.key === 'Delete' && selectedSectionId && !isEditorFocused()) {
       e.preventDefault(); deleteSection(selectedSectionId);
     }
@@ -1632,6 +1634,142 @@ function normalizeInstrumentalSections() {
   setStatus('Sections instrumentales normalisees');
 }
 
+function computeSingerStats() {
+  const stats = {};
+  project.singers.forEach(s => {
+    stats[s.id] = {name:s.name, sections:0, lines:0, words:0};
+  });
+
+  project.sections.forEach(sec => {
+    if (!stats[sec.assignment]) return;
+    const entry = stats[sec.assignment];
+    entry.sections += 1;
+    const lines = (sec.lyrics || '').split('\n').filter(l => l.trim());
+    entry.lines += lines.length;
+    entry.words += lines.join(' ').split(/\s+/).filter(Boolean).length;
+  });
+
+  return Object.values(stats)
+    .filter(x => x.sections > 0 || x.lines > 0 || x.words > 0)
+    .sort((a,b) => b.words - a.words);
+}
+
+function applyWorkflowPreset() {
+  const sel = document.getElementById('workflowPreset');
+  if (!sel) return;
+  const preset = sel.value;
+  pushUndo();
+
+  if (preset === 'duo-pop') {
+    document.getElementById('exportMode').value = 'strict';
+    if (project.singers.length < 2) {
+      project.singers = [
+        {id: uid(), name:'Vox A', voice_type:'male', phonetic:'', description:'lead'},
+        {id: uid(), name:'Vox B', voice_type:'female', phonetic:'', description:'counter'}
+      ];
+    }
+    applyTemplate('Duo — Homme/Femme');
+    project.style = 'modern pop duet, emotional build up, catchy chorus, polished radio mix';
+  } else if (preset === 'rap-battle') {
+    document.getElementById('exportMode').value = 'strict';
+    if (project.singers.length < 2) {
+      project.singers = [
+        {id: uid(), name:'MC One', voice_type:'male', phonetic:'', description:'aggressive rap'},
+        {id: uid(), name:'MC Two', voice_type:'male', phonetic:'', description:'technical rap'}
+      ];
+    }
+    applyTemplate('Call & Response');
+    project.style = 'hard hitting rap battle, punchline driven, rhythmic call and response, dark beat';
+    project.sections.forEach(s => {
+      if (s.sectionType === 'VERSE') s.performanceTag = 'Rap';
+    });
+  } else if (preset === 'epic-choir') {
+    document.getElementById('exportMode').value = 'strict';
+    applyTemplate('Epic / Cinematique');
+    project.style = 'cinematic hybrid orchestral, epic choir, dramatic crescendos, trailer-like energy';
+  } else if (preset === 'acoustic-ballad') {
+    document.getElementById('exportMode').value = 'balanced';
+    applyTemplate('Ballade — Lente et emotive');
+    project.style = 'intimate acoustic ballad, soft vocals, emotional storytelling, warm room ambience';
+  }
+
+  syncInputs();
+  renderAll();
+  toast('Preset workflow applique');
+  setStatus(`Preset applique: ${preset}`);
+}
+
+function buildDiscordMarkdown() {
+  const mode = getSelectedExportMode();
+  const strict = renderSunoTextWithMode('strict');
+  const balanced = renderSunoTextWithMode('balanced');
+  const issues = detectCompatibilityIssues();
+  const score = computeQualityScore(issues.length);
+  const singerStats = computeSingerStats();
+  const duration = estimateDurationSeconds();
+  const mm = Math.floor(duration / 60);
+  const ss = String(duration % 60).padStart(2, '0');
+
+  const lines = [];
+  lines.push(`# ${project.title || 'Chanson sans titre'}`);
+  lines.push('');
+  lines.push(`- Style: ${project.style || '(non renseigne)'}`);
+  lines.push(`- Mode export: ${mode}`);
+  lines.push(`- Sections: ${project.sections.length}`);
+  lines.push(`- Chanteurs: ${project.singers.length}`);
+  lines.push(`- Duree estimee: ~${mm}:${ss}`);
+  lines.push(`- Score qualite: ${score}/100`);
+  lines.push('');
+
+  if (project.singers.length) {
+    lines.push('## Chanteurs');
+    project.singers.forEach(s => {
+      lines.push(`- ${s.name} (${s.voice_type})${s.phonetic ? ` • phonetique: ${s.phonetic}` : ''}${s.description ? ` • ${s.description}` : ''}`);
+    });
+    lines.push('');
+  }
+
+  if (singerStats.length) {
+    lines.push('## Stats vocales');
+    singerStats.forEach(s => {
+      lines.push(`- ${s.name}: ${s.sections} section(s), ${s.lines} ligne(s), ${s.words} mots`);
+    });
+    lines.push('');
+  }
+
+  lines.push('## Prompt Suno (strict)');
+  lines.push('```');
+  lines.push(strict || '(vide)');
+  lines.push('```');
+  lines.push('');
+  lines.push('## Prompt Suno (equilibre)');
+  lines.push('```');
+  lines.push(balanced || '(vide)');
+  lines.push('```');
+  lines.push('');
+
+  lines.push('## Diagnostic');
+  if (!issues.length) {
+    lines.push('- Aucun probleme detecte');
+  } else {
+    issues.forEach(i => lines.push(`- [${i.level}] ${i.message}`));
+  }
+
+  return lines.join('\n');
+}
+
+function exportDiscordMarkdown() {
+  const text = buildDiscordMarkdown();
+  const blob = new Blob([text], {type: 'text/markdown;charset=utf-8'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = (project.title || 'chanson') + '_discord.md';
+  a.click();
+  URL.revokeObjectURL(a.href);
+  toast('Export markdown Discord genere');
+  setStatus('Fichier markdown exporte pour partage Discord');
+}
+
 function applyBulkAssignment() {
   const typeSel = document.getElementById('bulkSectionType');
   const assignSel = document.getElementById('bulkAssignment');
@@ -1698,6 +1836,18 @@ function renderStudioPanel() {
   const moodOpts = ['<option value="">-- choisir --</option>']
     .concat(MOOD_TAGS.map(t => `<option value="${t}">${t}</option>`)).join('');
 
+  const presetOpts = [
+    {id:'duo-pop', label:'Duo Pop (strict + template duo)'},
+    {id:'rap-battle', label:'Rap Battle 2 voix'},
+    {id:'epic-choir', label:'Epic Choir Cinematique'},
+    {id:'acoustic-ballad', label:'Ballade acoustique intime'}
+  ].map(p => `<option value="${p.id}">${p.label}</option>`).join('');
+
+  const singerStats = computeSingerStats();
+  const singerStatsHtml = singerStats.length
+    ? singerStats.map(s => `<div class="snap-item"><div><strong>${escHtml(s.name)}</strong><div class="meta">${s.sections} section(s) • ${s.lines} ligne(s)</div></div><div class="meta">${s.words} mots</div></div>`).join('')
+    : '<div class="meta">Statistiques indisponibles (aucun chanteur assigne).</div>';
+
   const snapHtml = snaps.length ? snaps.map(s => {
     const dt = new Date(s.createdAt);
     const when = Number.isNaN(dt.getTime()) ? s.createdAt : dt.toLocaleString('fr-FR');
@@ -1714,6 +1864,15 @@ function renderStudioPanel() {
   }).join('') : '<div class="meta">Aucun snapshot. Sauvegardez vos versions avant gros changements.</div>';
 
   area.innerHTML = `
+    <section class="studio-card">
+      <h4>Workflow Presets</h4>
+      <div class="studio-row">
+        <select id="workflowPreset">${presetOpts}</select>
+        <button class="btn small primary" onclick="applyWorkflowPreset()">Appliquer preset</button>
+      </div>
+      <div class="meta" style="margin-top:8px">Les presets configurent style, mode d'export et structure cible pour accelerer la creation.</div>
+    </section>
+
     <section class="studio-card">
       <h4>Versions Snapshot</h4>
       <div class="studio-row">
@@ -1742,6 +1901,11 @@ function renderStudioPanel() {
         <button class="btn small" onclick="sanitizeAllLyrics()">Nettoyer toutes les paroles</button>
         <button class="btn small" onclick="normalizeInstrumentalSections()">Normaliser sections instrumentales</button>
       </div>
+    </section>
+
+    <section class="studio-card">
+      <h4>Stats Vocales</h4>
+      <div class="snap-list">${singerStatsHtml}</div>
     </section>`;
 }
 
