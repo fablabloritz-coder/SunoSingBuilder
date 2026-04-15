@@ -41,6 +41,11 @@ Aucune dependance, aucun build, aucune installation.
   - score de qualite (0-100)
   - liste des erreurs / avertissements
   - auto-fix sur incoherences courantes
+- Onglet `Studio`:
+  - snapshots de versions (sauvegarde / chargement / suppression)
+  - operations batch (assignation et tags d'ambiance par type de section)
+  - nettoyage global des paroles
+  - normalisation des sections instrumentales
 - Diagnostic compatibilite manuel
 - Estimation de duree de morceau
 - Optimiseur de style prompt (`Wand Style`)
@@ -53,7 +58,8 @@ Aucune dependance, aucun build, aucune installation.
 3. Appliquer un template (optionnel).
 4. Ecrire/assigner les sections.
 5. Verifier `Apercu Suno` et `Qualite`.
-6. Exporter en `.txt` pour Suno ou en `.html` pour partage Discord.
+6. Utiliser `Studio` pour snapshots, batch edits et nettoyage.
+7. Exporter en `.txt` pour Suno ou en `.html` pour partage Discord.
 
 ## Raccourcis clavier
 

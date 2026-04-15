@@ -218,6 +218,17 @@ a{color:var(--accent2);text-decoration:none}
 .quality-item .tag.warn{background:rgba(234,179,8,.15);color:var(--yellow)}
 .quality-item .msg{margin-top:6px;font-size:.82rem;color:var(--text)}
 
+/* Studio */
+.studio-toolbar{padding:8px 12px;display:flex;gap:6px;border-bottom:1px solid var(--border);flex-wrap:wrap}
+.studio-area{flex:1;overflow-y:auto;padding:14px;background:#0a0a14;display:grid;gap:12px}
+.studio-card{border:1px solid var(--border);border-radius:10px;padding:12px;background:var(--card)}
+.studio-card h4{font-size:.9rem;color:var(--accent2);margin-bottom:8px}
+.studio-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.studio-row input,.studio-row select{background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px}
+.snap-list{display:flex;flex-direction:column;gap:6px;margin-top:8px;max-height:180px;overflow:auto}
+.snap-item{display:flex;justify-content:space-between;align-items:center;gap:8px;border:1px solid var(--border);border-radius:8px;padding:8px;background:#111937}
+.snap-item .meta{font-size:.75rem;color:var(--text2)}
+
 /* Editor */
 .editor-area{flex:1;overflow-y:auto;padding:16px}
 .editor-area .form-row{margin-bottom:12px}
@@ -378,6 +389,7 @@ a{color:var(--accent2);text-decoration:none}
         <div class="panel-tab active" onclick="switchTab('editor')" id="tabEditor">Editeur</div>
         <div class="panel-tab" onclick="switchTab('preview')" id="tabPreview">Apercu Suno</div>
         <div class="panel-tab" onclick="switchTab('quality')" id="tabQuality">Qualite</div>
+        <div class="panel-tab" onclick="switchTab('studio')" id="tabStudio">Studio</div>
       </div>
 
       <!-- TAB: Editor -->
@@ -412,6 +424,19 @@ a{color:var(--accent2);text-decoration:none}
           <span id="qualityHeadline" style="font-size:.75rem;color:var(--text3)"></span>
         </div>
         <div class="quality-area" id="qualityArea"></div>
+      </div>
+
+      <!-- TAB: Studio -->
+      <div class="tab-content" id="contentStudio">
+        <div class="studio-toolbar">
+          <button class="btn small" onclick="renderStudioPanel()">Rafraichir</button>
+          <button class="btn small primary" onclick="saveSnapshot()">Sauver snapshot</button>
+          <button class="btn small" onclick="sanitizeAllLyrics()">Nettoyer paroles</button>
+          <button class="btn small" onclick="normalizeInstrumentalSections()">Normaliser instrumentales</button>
+          <span style="flex:1"></span>
+          <span id="studioHeadline" style="font-size:.75rem;color:var(--text3)"></span>
+        </div>
+        <div class="studio-area" id="studioArea"></div>
       </div>
     </div>
 
@@ -512,6 +537,7 @@ let selectedSectionId = null;
 let undoStack = [];
 let redoStack = [];
 let dragSrcId = null;
+const SNAP_KEY = 'suno_builder_snapshots';
 
 // ─── INIT ──────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
@@ -630,7 +656,24 @@ function renderAll() {
   renderSections();
   refreshPreview();
   renderQualityPanel();
+  renderStudioPanel();
   autoSave();
+}
+
+function readSnapshots() {
+  try {
+    const raw = localStorage.getItem(SNAP_KEY);
+    const data = raw ? JSON.parse(raw) : [];
+    return Array.isArray(data) ? data : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function writeSnapshots(items) {
+  try {
+    localStorage.setItem(SNAP_KEY, JSON.stringify(items.slice(0, 30)));
+  } catch (e) {}
 }
 
 // ═══════════════════════════════════════════
@@ -1486,6 +1529,222 @@ function optimizeStylePrompt() {
   setStatus('Style prompt optimise automatiquement');
 }
 
+function snapshotDefaultName() {
+  const t = new Date();
+  const hh = String(t.getHours()).padStart(2, '0');
+  const mm = String(t.getMinutes()).padStart(2, '0');
+  return `${project.title || 'Projet'} ${hh}:${mm}`;
+}
+
+function saveSnapshot() {
+  const proposed = snapshotDefaultName();
+  const name = (prompt('Nom du snapshot:', proposed) || '').trim();
+  if (!name) return;
+  const items = readSnapshots();
+  items.unshift({
+    id: uid(),
+    name,
+    createdAt: new Date().toISOString(),
+    sectionCount: project.sections.length,
+    singerCount: project.singers.length,
+    data: project
+  });
+  writeSnapshots(items);
+  renderStudioPanel();
+  toast('Snapshot enregistre');
+  setStatus(`Snapshot "${name}" sauvegarde`);
+}
+
+function loadSnapshot(id) {
+  const snap = readSnapshots().find(s => s.id === id);
+  if (!snap) return;
+  if (!confirm(`Charger le snapshot "${snap.name}" ? Le projet courant sera remplace.`)) return;
+  pushUndo();
+  project = JSON.parse(JSON.stringify(snap.data));
+  syncInputs();
+  renderAll();
+  toast(`Snapshot "${snap.name}" charge`);
+}
+
+function deleteSnapshot(id) {
+  const items = readSnapshots();
+  const snap = items.find(s => s.id === id);
+  if (!snap) return;
+  if (!confirm(`Supprimer le snapshot "${snap.name}" ?`)) return;
+  writeSnapshots(items.filter(s => s.id !== id));
+  renderStudioPanel();
+  toast('Snapshot supprime');
+}
+
+function sanitizeLineText(text) {
+  return text
+    .replace(/[“”]/g, '"')
+    .replace(/[‘’]/g, "'")
+    .replace(/\t/g, '  ')
+    .replace(/\u00A0/g, ' ')
+    .replace(/\s+$/gm, '');
+}
+
+function sanitizeAllLyrics() {
+  if (!project.sections.length) return;
+  pushUndo();
+  let changed = 0;
+  project.sections.forEach(sec => {
+    const before = sec.lyrics || '';
+    const after = sanitizeLineText(before)
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+    if (before !== after) {
+      sec.lyrics = after;
+      changed++;
+    }
+    if (sec.spokenLine) {
+      const cleanedSpoken = sanitizeLineText(sec.spokenLine).trim();
+      if (cleanedSpoken !== sec.spokenLine) {
+        sec.spokenLine = cleanedSpoken;
+        changed++;
+      }
+    }
+  });
+  renderAll();
+  if (selectedSectionId) loadEditor(selectedSectionId);
+  toast(`${changed} nettoyage(s) applique(s)`);
+  setStatus('Paroles nettoyees globalement');
+}
+
+function normalizeInstrumentalSections() {
+  if (!project.sections.length) return;
+  pushUndo();
+  let fixed = 0;
+  project.sections.forEach(sec => {
+    if (sec.assignment === 'instrumental') {
+      if (sec.performanceTag) { sec.performanceTag = ''; fixed++; }
+      if (sec.spokenLine && sec.spokenLine.trim()) { sec.spokenLine = ''; fixed++; }
+    }
+    if ((sec.sectionType === 'INTRO' || sec.sectionType === 'OUTRO' || sec.sectionType === 'INTERLUDE') && sec.assignment === 'all' && !sec.lyrics.trim()) {
+      sec.assignment = 'instrumental';
+      fixed++;
+    }
+  });
+  renderAll();
+  if (selectedSectionId) loadEditor(selectedSectionId);
+  toast(`${fixed} normalisation(s) appliquee(s)`);
+  setStatus('Sections instrumentales normalisees');
+}
+
+function applyBulkAssignment() {
+  const typeSel = document.getElementById('bulkSectionType');
+  const assignSel = document.getElementById('bulkAssignment');
+  if (!typeSel || !assignSel) return;
+  const sectionType = typeSel.value;
+  const assignment = assignSel.value;
+  const targets = project.sections.filter(s => sectionType === '__ALL__' ? true : s.sectionType === sectionType);
+  if (!targets.length) {
+    toast('Aucune section cible', 'info');
+    return;
+  }
+  pushUndo();
+  targets.forEach(s => { s.assignment = assignment; });
+  renderAll();
+  if (selectedSectionId) loadEditor(selectedSectionId);
+  toast(`Assignation appliquee a ${targets.length} section(s)`);
+}
+
+function bulkAddMoodTag() {
+  const tagSel = document.getElementById('bulkMoodTag');
+  const typeSel = document.getElementById('bulkSectionTypeMood');
+  if (!tagSel || !typeSel) return;
+  const tag = tagSel.value;
+  if (!tag) return;
+  const sectionType = typeSel.value;
+  const targets = project.sections.filter(s => sectionType === '__ALL__' ? true : s.sectionType === sectionType);
+  if (!targets.length) {
+    toast('Aucune section cible', 'info');
+    return;
+  }
+  pushUndo();
+  let changed = 0;
+  targets.forEach(s => {
+    if (!s.moodTags) s.moodTags = [];
+    if (!s.moodTags.includes(tag)) {
+      s.moodTags.push(tag);
+      changed++;
+    }
+  });
+  renderAll();
+  if (selectedSectionId) loadEditor(selectedSectionId);
+  toast(`${changed} section(s) mises a jour`);
+}
+
+function renderStudioPanel() {
+  const area = document.getElementById('studioArea');
+  const headline = document.getElementById('studioHeadline');
+  if (!area || !headline) return;
+
+  const snaps = readSnapshots();
+  headline.textContent = `${snaps.length} snapshot(s)`;
+
+  const assignOpts = [
+    '<option value="all">Tous</option>',
+    '<option value="instrumental">Instrumental</option>',
+    '<option value="public">Public</option>',
+    '<option value="mixed">Mixte</option>',
+    ...project.singers.map(s => `<option value="${s.id}">${escHtml(s.name)} (${s.voice_type})</option>`)
+  ].join('');
+
+  const sectionTypeOpts = ['<option value="__ALL__">Toutes les sections</option>']
+    .concat(SECTION_TYPES.map(t => `<option value="${t.id}">${t.label}</option>`)).join('');
+
+  const moodOpts = ['<option value="">-- choisir --</option>']
+    .concat(MOOD_TAGS.map(t => `<option value="${t}">${t}</option>`)).join('');
+
+  const snapHtml = snaps.length ? snaps.map(s => {
+    const dt = new Date(s.createdAt);
+    const when = Number.isNaN(dt.getTime()) ? s.createdAt : dt.toLocaleString('fr-FR');
+    return `<div class="snap-item">
+      <div>
+        <div><strong>${escHtml(s.name)}</strong></div>
+        <div class="meta">${when} • ${s.sectionCount} sections • ${s.singerCount} chanteurs</div>
+      </div>
+      <div class="studio-row">
+        <button class="btn tiny" onclick="loadSnapshot('${s.id}')">Charger</button>
+        <button class="btn tiny danger" onclick="deleteSnapshot('${s.id}')">Suppr</button>
+      </div>
+    </div>`;
+  }).join('') : '<div class="meta">Aucun snapshot. Sauvegardez vos versions avant gros changements.</div>';
+
+  area.innerHTML = `
+    <section class="studio-card">
+      <h4>Versions Snapshot</h4>
+      <div class="studio-row">
+        <button class="btn small primary" onclick="saveSnapshot()">Sauver un snapshot</button>
+      </div>
+      <div class="snap-list">${snapHtml}</div>
+    </section>
+
+    <section class="studio-card">
+      <h4>Operations Batch</h4>
+      <div class="studio-row" style="margin-bottom:8px">
+        <select id="bulkSectionType">${sectionTypeOpts}</select>
+        <select id="bulkAssignment">${assignOpts}</select>
+        <button class="btn small" onclick="applyBulkAssignment()">Appliquer assignation</button>
+      </div>
+      <div class="studio-row">
+        <select id="bulkSectionTypeMood">${sectionTypeOpts}</select>
+        <select id="bulkMoodTag">${moodOpts}</select>
+        <button class="btn small" onclick="bulkAddMoodTag()">Ajouter tag ambiance</button>
+      </div>
+    </section>
+
+    <section class="studio-card">
+      <h4>Nettoyage Global</h4>
+      <div class="studio-row">
+        <button class="btn small" onclick="sanitizeAllLyrics()">Nettoyer toutes les paroles</button>
+        <button class="btn small" onclick="normalizeInstrumentalSections()">Normaliser sections instrumentales</button>
+      </div>
+    </section>`;
+}
+
 // ═══════════════════════════════════════════
 // TABS
 // ═══════════════════════════════════════════
@@ -1496,6 +1755,7 @@ function switchTab(tab) {
   document.getElementById('content' + tab.charAt(0).toUpperCase() + tab.slice(1)).classList.add('active');
   if (tab === 'preview') refreshPreview();
   if (tab === 'quality') renderQualityPanel();
+  if (tab === 'studio') renderStudioPanel();
 }
 
 // ═══════════════════════════════════════════
