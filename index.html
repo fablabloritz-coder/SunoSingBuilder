@@ -199,6 +199,22 @@ a{color:var(--accent2);text-decoration:none}
 .preview-area .global-note{color:#cba6f7}
 .preview-area .lyric{color:#cdd6f4}
 
+/* Quality */
+.quality-toolbar{padding:8px 12px;display:flex;gap:6px;border-bottom:1px solid var(--border)}
+.quality-area{flex:1;overflow-y:auto;padding:14px;background:#0a0a14}
+.quality-summary{display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap}
+.quality-score{font-weight:800;font-size:1.1rem;padding:4px 10px;border-radius:8px}
+.quality-score.good{background:rgba(34,197,94,.18);color:var(--green)}
+.quality-score.warn{background:rgba(234,179,8,.18);color:var(--yellow)}
+.quality-score.bad{background:rgba(239,68,68,.18);color:var(--red)}
+.quality-list{display:flex;flex-direction:column;gap:8px}
+.quality-item{border:1px solid var(--border);border-radius:8px;padding:10px;background:var(--card)}
+.quality-item .head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.quality-item .tag{font-size:.72rem;padding:2px 8px;border-radius:10px}
+.quality-item .tag.error{background:rgba(239,68,68,.15);color:var(--red)}
+.quality-item .tag.warn{background:rgba(234,179,8,.15);color:var(--yellow)}
+.quality-item .msg{margin-top:6px;font-size:.82rem;color:var(--text)}
+
 /* Editor */
 .editor-area{flex:1;overflow-y:auto;padding:16px}
 .editor-area .form-row{margin-bottom:12px}
@@ -283,6 +299,7 @@ a{color:var(--accent2);text-decoration:none}
       <option value="strict">Export: Compatibilite stricte</option>
     </select>
     <div class="topbar-actions">
+      <button class="btn" onclick="optimizeStylePrompt()" title="Optimise automatiquement le style prompt">Wand Style</button>
       <button class="btn" onclick="showTemplates()" title="Templates de chanson">&#9776; Templates</button>
       <button class="btn" onclick="importProject()" title="Ctrl+O">&#128194; Ouvrir</button>
       <button class="btn" onclick="saveProject()" title="Ctrl+S">&#128190; Sauver</button>
@@ -353,6 +370,7 @@ a{color:var(--accent2);text-decoration:none}
       <div class="panel-tabs">
         <div class="panel-tab active" onclick="switchTab('editor')" id="tabEditor">Editeur</div>
         <div class="panel-tab" onclick="switchTab('preview')" id="tabPreview">Apercu Suno</div>
+        <div class="panel-tab" onclick="switchTab('quality')" id="tabQuality">Qualite</div>
       </div>
 
       <!-- TAB: Editor -->
@@ -374,6 +392,18 @@ a{color:var(--accent2);text-decoration:none}
           <span id="previewStats" style="font-size:.75rem;color:var(--text3)"></span>
         </div>
         <div class="preview-area" id="previewArea"></div>
+      </div>
+
+      <!-- TAB: Quality -->
+      <div class="tab-content" id="contentQuality">
+        <div class="quality-toolbar">
+          <button class="btn small" onclick="renderQualityPanel()">Rafraichir</button>
+          <button class="btn small" onclick="runCompatibilityCheck()">Diagnostiquer</button>
+          <button class="btn small primary" onclick="autoFixIssues()">Auto-fix</button>
+          <span style="flex:1"></span>
+          <span id="qualityHeadline" style="font-size:.75rem;color:var(--text3)"></span>
+        </div>
+        <div class="quality-area" id="qualityArea"></div>
       </div>
     </div>
 
@@ -591,6 +621,7 @@ function renderAll() {
   renderSingers();
   renderSections();
   refreshPreview();
+  renderQualityPanel();
   autoSave();
 }
 
@@ -1219,8 +1250,12 @@ function refreshPreview() {
   // Stats
   const words = raw.split(/\s+/).filter(w => w && !w.startsWith('[')).length;
   const chars = raw.length;
+  const seconds = estimateDurationSeconds();
+  const mm = Math.floor(seconds / 60);
+  const ss = String(seconds % 60).padStart(2, '0');
+  const quality = computeQualityScore(detectCompatibilityIssues().length);
   document.getElementById('previewStats').textContent =
-    `${project.sections.length} sections | ~${words} mots | ${chars} caracteres`;
+    `${project.sections.length} sections | ~${words} mots | ${chars} caracteres | ~${mm}:${ss} | qualite ${quality}/100`;
 }
 
 function copyPreview() {
@@ -1251,43 +1286,196 @@ function copyStrictPreview() {
 }
 
 function runCompatibilityCheck() {
+  const issues = detectCompatibilityIssues();
+
+  if (!issues.length) {
+    toast('Diagnostic OK: structure propre pour Suno');
+    setStatus('Diagnostic compatibilite: aucun probleme detecte');
+    renderQualityPanel();
+    return;
+  }
+
+  const report = ['Diagnostic compatibilite Suno', ''].concat(issues.map(i => i.message)).join('\n- ');
+  alert(report);
+  setStatus(`Diagnostic: ${issues.length} point(s) a verifier`);
+  renderQualityPanel();
+}
+
+function detectCompatibilityIssues() {
   const issues = [];
+  const seen = new Set();
 
   if (!project.sections.length) {
-    issues.push('Aucune section dans le projet.');
+    issues.push({level:'error', code:'empty-project', message:'Aucune section dans le projet.'});
   }
 
   project.sections.forEach((sec, idx) => {
     const where = `${idx + 1}. ${sec.sectionType}${sec.number ? ' ' + sec.number : ''}`;
 
     if (sec.assignment === 'instrumental') {
-      if (sec.lyrics && sec.lyrics.trim()) issues.push(`${where}: section instrumentale avec paroles.`);
-      if (sec.performanceTag) issues.push(`${where}: section instrumentale avec performance vocale "${sec.performanceTag}".`);
+      if (sec.lyrics && sec.lyrics.trim()) {
+        issues.push({level:'error', code:'instrumental-lyrics', sectionId:sec.id, message:`${where}: section instrumentale avec paroles.`});
+      }
+      if (sec.performanceTag) {
+        issues.push({level:'error', code:'instrumental-performance', sectionId:sec.id, message:`${where}: section instrumentale avec performance vocale "${sec.performanceTag}".`});
+      }
     }
 
     if (sec.assignment !== 'instrumental' && (!sec.lyrics || !sec.lyrics.trim())) {
-      issues.push(`${where}: section vocale sans paroles.`);
+      issues.push({level:'warn', code:'vocal-no-lyrics', sectionId:sec.id, message:`${where}: section vocale sans paroles.`});
     }
 
     if (!['all','instrumental','public','mixed'].includes(sec.assignment) && !singerById(sec.assignment)) {
-      issues.push(`${where}: chanteur assigne introuvable (ID supprime).`);
+      issues.push({level:'error', code:'missing-singer', sectionId:sec.id, message:`${where}: chanteur assigne introuvable (ID supprime).`});
     }
+
+    if (sec.performanceTag === 'Rap' && sec.assignment === 'all') {
+      issues.push({level:'warn', code:'rap-all', sectionId:sec.id, message:`${where}: Rap sur "Tous les chanteurs" peut etre ambigu pour Suno.`});
+    }
+
+    if (sec.sectionType === 'CHORUS' && sec.assignment === 'instrumental') {
+      issues.push({level:'warn', code:'instrumental-chorus', sectionId:sec.id, message:`${where}: Refrain instrumental, verifier si intentionnel.`});
+    }
+
+    const key = `${sec.sectionType}|${sec.number||0}`;
+    if (seen.has(key) && ['VERSE','CHORUS'].includes(sec.sectionType)) {
+      issues.push({level:'warn', code:'duplicate-number', sectionId:sec.id, message:`${where}: numero potentiellement duplique pour ${sec.sectionType}.`});
+    }
+    seen.add(key);
   });
 
-  const mode = getSelectedExportMode();
-  if (mode === 'balanced') {
-    issues.push('Mode Equilibre: certains tags creatifs peuvent etre ignores par Suno.');
+  if (getSelectedExportMode() === 'balanced') {
+    issues.push({level:'warn', code:'balanced-mode', message:'Mode Equilibre: certains tags creatifs peuvent etre ignores par Suno.'});
   }
+  return issues;
+}
+
+function computeQualityScore(issueCount) {
+  return Math.max(0, 100 - (issueCount * 8));
+}
+
+function estimateDurationSeconds() {
+  const lineCount = project.sections.reduce((acc, sec) => {
+    if (!sec.lyrics || !sec.lyrics.trim()) return acc;
+    return acc + sec.lyrics.split('\n').filter(l => l.trim()).length;
+  }, 0);
+
+  const instrumentalBonus = project.sections.filter(s => s.assignment === 'instrumental').length * 8;
+  const spokenBonus = project.sections.filter(s => s.spokenLine && s.spokenLine.trim()).length * 3;
+  const estimate = Math.round(lineCount * 3.4 + instrumentalBonus + spokenBonus + 8);
+  return Math.max(20, estimate);
+}
+
+function renderQualityPanel() {
+  const area = document.getElementById('qualityArea');
+  const headline = document.getElementById('qualityHeadline');
+  if (!area || !headline) return;
+
+  const issues = detectCompatibilityIssues();
+  const score = computeQualityScore(issues.length);
+  const scoreClass = score >= 85 ? 'good' : (score >= 65 ? 'warn' : 'bad');
+
+  headline.textContent = `${issues.length} issue(s)`;
 
   if (!issues.length) {
-    toast('Diagnostic OK: structure propre pour Suno');
-    setStatus('Diagnostic compatibilite: aucun probleme detecte');
+    area.innerHTML = `
+      <div class="quality-summary">
+        <span class="quality-score ${scoreClass}">Score ${score}/100</span>
+        <span style="color:var(--text2)">Projet propre pour un export Suno.</span>
+      </div>
+      <div class="quality-item">
+        <div class="head"><strong>Etat</strong><span class="tag warn" style="background:rgba(34,197,94,.15);color:var(--green)">OK</span></div>
+        <div class="msg">Aucune incoherence detectee. Vous pouvez exporter en mode strict pour une compatibilite maximale.</div>
+      </div>`;
     return;
   }
 
-  const report = ['Diagnostic compatibilite Suno', ''].concat(issues).join('\n- ');
-  alert(report);
-  setStatus(`Diagnostic: ${issues.length} point(s) a verifier`);
+  const rows = issues.map(issue => `
+    <div class="quality-item">
+      <div class="head">
+        <strong>${escHtml(issue.code || 'warning')}</strong>
+        <span class="tag ${issue.level === 'error' ? 'error' : 'warn'}">${issue.level === 'error' ? 'Erreur' : 'Avertissement'}</span>
+      </div>
+      <div class="msg">${escHtml(issue.message)}</div>
+    </div>
+  `).join('');
+
+  area.innerHTML = `
+    <div class="quality-summary">
+      <span class="quality-score ${scoreClass}">Score ${score}/100</span>
+      <span style="color:var(--text2)">Objectif conseille: >= 85 avant export final.</span>
+    </div>
+    <div class="quality-list">${rows}</div>`;
+}
+
+function autoFixIssues() {
+  const issues = detectCompatibilityIssues();
+  if (!issues.length) {
+    toast('Aucune correction necessaire', 'info');
+    return;
+  }
+
+  pushUndo();
+  let fixed = 0;
+
+  for (const issue of issues) {
+    const sec = issue.sectionId ? sectionById(issue.sectionId) : null;
+    if (!sec) continue;
+
+    if (issue.code === 'instrumental-lyrics') {
+      sec.assignment = 'all';
+      fixed++;
+    } else if (issue.code === 'instrumental-performance') {
+      sec.performanceTag = '';
+      fixed++;
+    } else if (issue.code === 'missing-singer') {
+      sec.assignment = 'all';
+      fixed++;
+    } else if (issue.code === 'duplicate-number') {
+      autoNumber();
+      fixed++;
+    }
+  }
+
+  renderAll();
+  if (selectedSectionId) loadEditor(selectedSectionId);
+  toast(`${fixed} correction(s) appliquee(s)`);
+  setStatus(`Auto-fix termine: ${fixed} correction(s)`);
+}
+
+function optimizeStylePrompt() {
+  const moodSet = new Set();
+  const perfSet = new Set();
+  const sectionTypes = new Set(project.sections.map(s => s.sectionType));
+
+  project.sections.forEach(sec => {
+    (sec.moodTags || []).forEach(t => moodSet.add(normalizeMoodTag(t, 'strict')));
+    if (sec.performanceTag) perfSet.add(sec.performanceTag);
+  });
+
+  const parts = [];
+  if (sectionTypes.has('DROP')) parts.push('electronic drop-oriented arrangement');
+  if (sectionTypes.has('BRIDGE')) parts.push('dynamic bridge transition');
+  if (sectionTypes.has('ROUND FINAL')) parts.push('anthemic final round');
+  if (project.singers.length >= 2) parts.push('multi-voice arrangement');
+  if ([...perfSet].includes('Rap')) parts.push('rhythmic rap cadence');
+  if ([...perfSet].includes('Choir')) parts.push('layered choir textures');
+
+  const topMoods = [...moodSet].slice(0, 4);
+  if (topMoods.length) parts.push(topMoods.join(', '));
+
+  const base = project.style ? project.style.trim() + ', ' : '';
+  const optimized = (base + parts.join(', ')).replace(/\s+,/g, ',').replace(/,{2,}/g, ',').trim();
+  if (!optimized) {
+    toast('Pas assez de donnees pour optimiser le style', 'info');
+    return;
+  }
+
+  project.style = optimized;
+  syncInputs();
+  autoSave();
+  toast('Style prompt optimise');
+  setStatus('Style prompt optimise automatiquement');
 }
 
 // ═══════════════════════════════════════════
@@ -1299,6 +1487,7 @@ function switchTab(tab) {
   document.getElementById('tab' + tab.charAt(0).toUpperCase() + tab.slice(1)).classList.add('active');
   document.getElementById('content' + tab.charAt(0).toUpperCase() + tab.slice(1)).classList.add('active');
   if (tab === 'preview') refreshPreview();
+  if (tab === 'quality') renderQualityPanel();
 }
 
 // ═══════════════════════════════════════════
@@ -1595,6 +1784,11 @@ function parseTxtToProject(content) {
       continue;
     }
 
+    if (stripped.startsWith('[STYLE:') && stripped.endsWith(']')) {
+      newProject.style = stripped.slice(7, -1).trim();
+      continue;
+    }
+
     if (stripped.startsWith('[') && stripped.endsWith(']') &&
         stripped.toLowerCase().includes('singer') && !currentSection) {
       newProject.globalNote = stripped;
@@ -1674,6 +1868,11 @@ function exportSuno() {
   toast(`Exporte pour Suno (${mode === 'strict' ? 'strict' : 'equilibre'})`);
   setStatus(`Fichier exporte pour Suno (.txt, mode ${mode})`);
 }
+
+document.getElementById('exportMode').addEventListener('change', () => {
+  refreshPreview();
+  renderQualityPanel();
+});
 
 // ═══════════════════════════════════════════
 // MODALS

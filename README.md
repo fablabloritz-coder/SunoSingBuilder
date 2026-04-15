@@ -1,0 +1,77 @@
+# Suno Song Builder (Web App)
+
+Application web autonome pour structurer des paroles et sections de chanson pour Suno, avec focus sur la compatibilite multi-voix, l'export propre et la rapidite de workflow.
+
+## Fichier unique
+
+Le projet est volontairement minimal:
+
+- `index.html` : app complete (HTML + CSS + JavaScript)
+
+Aucune dependance, aucun build, aucune installation.
+
+## Fonctionnalites principales
+
+- Gestion des chanteurs:
+  - nom
+  - type de voix (male/female)
+  - notation phonetique pour la prononciation Suno
+- Construction de chanson par sections:
+  - Intro, Verse, Chorus, Bridge, Hook, Drop, Outro, etc.
+  - assignation de voix par section (solo, all, instrumental, public, mixed)
+  - tags d'ambiance + performance vocale
+- Drag & drop des sections
+- Templates (genres + multi-voix)
+- Editeur de paroles par section
+- Apercu Suno colore en temps reel
+- Export `.txt` pour Suno
+- Sauvegarde / ouverture projet `.json`
+- Import `.txt` existant
+- Auto-save localStorage
+- Undo / Redo
+
+## Fonctions avancees (compatibilite Suno)
+
+- Deux modes d'export:
+  - `Equilibre` : conserve les tags creatifs
+  - `Compatibilite stricte` : normalise les tags pour robustesse
+- En-tetes instrumentaux explicites a l'export
+- Onglet `Qualite`:
+  - score de qualite (0-100)
+  - liste des erreurs / avertissements
+  - auto-fix sur incoherences courantes
+- Diagnostic compatibilite manuel
+- Estimation de duree de morceau
+- Optimiseur de style prompt (`Wand Style`)
+
+## Demarrage
+
+1. Ouvrir `index.html` dans un navigateur.
+2. Ajouter les chanteurs.
+3. Appliquer un template (optionnel).
+4. Ecrire/assigner les sections.
+5. Verifier `Apercu Suno` et `Qualite`.
+6. Exporter en `.txt` pour Suno.
+
+## Raccourcis clavier
+
+- `Ctrl+S` : sauvegarder le projet JSON
+- `Ctrl+O` : ouvrir un projet
+- `Ctrl+E` : exporter pour Suno
+- `Ctrl+Z` : annuler
+- `Ctrl+Y` : retablir
+- `Delete` : supprimer la section selectionnee
+
+## Conseils d'utilisation Suno
+
+- Pour du multi-voix stable, utilisez des noms de chanteurs clairs et constants.
+- Pour la prononciation, remplissez le champ phonetique (ex: `Fenn-riss`).
+- Avant export final, viser un score `Qualite >= 85`.
+- En cas de comportements incoherents de Suno, utiliser l'export `Compatibilite stricte`.
+
+## Publication
+
+Ce depot est maintenu volontairement simple pour edition rapide:
+
+- code principal: `index.html`
+- documentation: `README.md`
