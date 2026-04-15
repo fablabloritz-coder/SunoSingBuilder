@@ -27,6 +27,7 @@ Aucune dependance, aucun build, aucune installation.
 - Export `.txt` pour Suno
 - Export `Pack Suno` (`*_suno_pack.txt`) avec style, lyrics strict/balanced, plan extend et check
 - Export `Plan Extend` (`*_suno_extend_plan.md`) bloc par bloc pour generation iterative Suno
+- Export `Styles Suno` (`*_suno_styles.txt`) avec 3 variantes prêtes a tester: safe, creative, aggressive
 - Export HTML de partage (`*_share.html`) avec toutes les informations de la chanson
 - Export Markdown Discord (`*_discord.md`) avec prompts, stats et diagnostic
 - Sauvegarde / ouverture projet `.json`
@@ -54,6 +55,7 @@ Aucune dependance, aucun build, aucune installation.
 - Diagnostic compatibilite manuel
 - Diagnostic compatibilite Suno renforce:
   - style manquant
+  - style trop long ou trop generique
   - lyrics trop longs
   - trop de sections pour une generation unique
   - section trop longue (>16 lignes)

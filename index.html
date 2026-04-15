@@ -317,6 +317,7 @@ a{color:var(--accent2);text-decoration:none}
     </select>
     <div class="topbar-actions">
       <button class="btn" onclick="optimizeStylePrompt()" title="Optimise automatiquement le style prompt">Wand Style</button>
+      <button class="btn" onclick="exportSunoStyleVariants()" title="Exporte 3 variantes de style prompt pour Suno">Styles Suno</button>
       <button class="btn" onclick="showTemplates()" title="Templates de chanson">&#9776; Templates</button>
       <button class="btn" onclick="importProject()" title="Ctrl+O">&#128194; Ouvrir</button>
       <button class="btn" onclick="saveProject()" title="Ctrl+S">&#128190; Sauver</button>
@@ -407,6 +408,9 @@ a{color:var(--accent2);text-decoration:none}
           <button class="btn small" onclick="refreshPreview()">Rafraichir</button>
           <button class="btn small primary" onclick="copyPreview()">Copier tout</button>
           <button class="btn small" onclick="copyStrictPreview()">Copier strict</button>
+          <button class="btn small" onclick="copyStyleVariant('safe')">Style safe</button>
+          <button class="btn small" onclick="copyStyleVariant('creative')">Style creative</button>
+          <button class="btn small" onclick="copyStyleVariant('aggressive')">Style agressif</button>
           <button class="btn small" onclick="runCompatibilityCheck()">Diagnostiquer</button>
           <button class="btn small" onclick="exportSunoPack()">Pack Suno</button>
           <button class="btn small" onclick="exportSunoExtendPlan()">Plan Extend</button>
@@ -1370,6 +1374,14 @@ function detectCompatibilityIssues() {
     issues.push({level:'warn', code:'style-missing', message:'Style prompt vide: Suno donnera des resultats moins stables.'});
   }
 
+  if (project.style && project.style.trim().length > 220) {
+    issues.push({level:'warn', code:'style-too-long', message:'Style prompt tres long (>220 chars): risque de dilution des intentions dans Suno.'});
+  }
+
+  if (project.style && project.style.split(',').length < 2) {
+    issues.push({level:'warn', code:'style-too-generic', message:'Style prompt tres generique: ajoutez 2 a 4 descriptors precis (genre, energie, texture).'});
+  }
+
   if (strictLen > 5000) {
     issues.push({level:'warn', code:'lyrics-too-long', message:'Prompt lyrics tres long (>5000 caracteres): risque de perte de details dans Suno.'});
   }
@@ -1645,6 +1657,76 @@ function optimizeStylePrompt() {
   autoSave();
   toast('Style prompt optimise');
   setStatus('Style prompt optimise automatiquement');
+}
+
+function buildSunoStyleVariants() {
+  const base = (project.style || '').trim();
+  const normalizedBase = base || 'modern song production, clear vocal lead, strong hook';
+
+  const hasRap = project.sections.some(s => s.performanceTag === 'Rap');
+  const hasChoir = project.sections.some(s => s.performanceTag === 'Choir');
+  const hasDrop = project.sections.some(s => s.sectionType === 'DROP');
+  const multiVoice = project.singers.length >= 2;
+
+  const anchors = [];
+  if (hasRap) anchors.push('rhythmic phrasing');
+  if (hasChoir) anchors.push('layered choir texture');
+  if (hasDrop) anchors.push('high energy drop transition');
+  if (multiVoice) anchors.push('distinct multi-voice contrast');
+
+  const anchorText = anchors.length ? ', ' + anchors.join(', ') : '';
+
+  return {
+    safe: `${normalizedBase}${anchorText}, stable arrangement, clean mix, intelligible lyrics, predictable structure`,
+    creative: `${normalizedBase}${anchorText}, cinematic transitions, surprising dynamics, rich harmonics, expressive vocal interpretation`,
+    aggressive: `${normalizedBase}${anchorText}, punchy transients, high intensity delivery, bold contrast, maximum chorus impact`
+  };
+}
+
+function copyStyleVariant(kind) {
+  const variants = buildSunoStyleVariants();
+  const value = variants[kind];
+  if (!value) return;
+  navigator.clipboard.writeText(value).then(() => {
+    toast(`Style ${kind} copie`);
+    setStatus(`Style ${kind} copie pour Suno`);
+  }).catch(() => {
+    const ta = document.createElement('textarea');
+    ta.value = value;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    toast(`Style ${kind} copie`);
+    setStatus(`Style ${kind} copie pour Suno`);
+  });
+}
+
+function exportSunoStyleVariants() {
+  const v = buildSunoStyleVariants();
+  const content = [
+    '=== SUNO STYLE VARIANTS ===',
+    `Titre: ${project.title || 'Sans titre'}`,
+    '',
+    '--- SAFE ---',
+    v.safe,
+    '',
+    '--- CREATIVE ---',
+    v.creative,
+    '',
+    '--- AGGRESSIVE ---',
+    v.aggressive,
+    ''
+  ].join('\n');
+
+  const blob = new Blob([content], {type: 'text/plain;charset=utf-8'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = (project.title || 'chanson') + '_suno_styles.txt';
+  a.click();
+  URL.revokeObjectURL(a.href);
+  toast('Variantes de style exportees');
+  setStatus('Fichier de styles Suno exporte');
 }
 
 function snapshotDefaultName() {
