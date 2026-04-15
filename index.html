@@ -550,6 +550,8 @@ const RHYME_TEMPLATES = [
   {id:'ABABCC', label:'ABABCC (punchline finale)', pattern:['A','B','A','B','C','C']}
 ];
 const LAYOUT_KEY = 'suno_builder_layout';
+const RHYME_GUARD_KEY = 'suno_builder_rhyme_guard';
+const RHYME_CACHE_KEY = 'suno_builder_rhyme_cache';
 
 const SINGER_COLORS = [
   '#60a5fa','#f472b6','#a78bfa','#34d399','#fb923c',
@@ -571,11 +573,27 @@ let selectedSectionId = null;
 let undoStack = [];
 let redoStack = [];
 let dragSrcId = null;
+let rhymeRequestToken = 0;
 const SNAP_KEY = 'suno_builder_snapshots';
+let rhymeGuardConfig = {
+  mode: 'hybrid', // local | hybrid | api
+  externalEnabled: false,
+  endpoint: '',
+  apiKey: '',
+  timeoutMs: 900,
+  hybridThreshold: 62,
+  useCache: true
+};
+let rhymeApiState = {
+  failures: 0,
+  circuitOpenUntil: 0,
+  lastError: ''
+};
 
 // ─── INIT ──────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   loadLayoutPrefs();
+  loadRhymeGuardConfig();
   loadAutoSave();
   buildQuickButtons();
   buildTemplatesGrid();
@@ -710,6 +728,193 @@ function resetLayoutPrefs() {
   applyLayoutPrefs(260, 380);
   try { localStorage.setItem(LAYOUT_KEY, JSON.stringify({left:260, right:380})); } catch (e) {}
   toast('Mise en page reinitialisee');
+}
+
+function loadRhymeGuardConfig() {
+  try {
+    const raw = localStorage.getItem(RHYME_GUARD_KEY);
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    rhymeGuardConfig = {
+      ...rhymeGuardConfig,
+      ...data,
+      timeoutMs: Math.max(300, Math.min(2500, Number(data.timeoutMs || rhymeGuardConfig.timeoutMs))),
+      hybridThreshold: Math.max(35, Math.min(90, Number(data.hybridThreshold || rhymeGuardConfig.hybridThreshold)))
+    };
+  } catch (e) {}
+}
+
+function saveRhymeGuardConfig() {
+  try {
+    localStorage.setItem(RHYME_GUARD_KEY, JSON.stringify(rhymeGuardConfig));
+  } catch (e) {}
+}
+
+function isRhymeCircuitOpen() {
+  return Date.now() < rhymeApiState.circuitOpenUntil;
+}
+
+function markRhymeApiFailure(err) {
+  rhymeApiState.failures += 1;
+  rhymeApiState.lastError = err ? String(err) : 'Erreur inconnue';
+  if (rhymeApiState.failures >= 3) {
+    rhymeApiState.circuitOpenUntil = Date.now() + (5 * 60 * 1000);
+  }
+}
+
+function markRhymeApiSuccess() {
+  rhymeApiState.failures = 0;
+  rhymeApiState.circuitOpenUntil = 0;
+  rhymeApiState.lastError = '';
+}
+
+function hashString(input) {
+  let h = 2166136261;
+  for (let i = 0; i < input.length; i++) {
+    h ^= input.charCodeAt(i);
+    h = (h * 16777619) >>> 0;
+  }
+  return h.toString(36);
+}
+
+function readRhymeCache() {
+  try {
+    const raw = localStorage.getItem(RHYME_CACHE_KEY);
+    const data = raw ? JSON.parse(raw) : {};
+    return data && typeof data === 'object' ? data : {};
+  } catch (e) {
+    return {};
+  }
+}
+
+function writeRhymeCache(cache) {
+  try {
+    const entries = Object.entries(cache).sort((a, b) => (b[1].ts || 0) - (a[1].ts || 0)).slice(0, 250);
+    localStorage.setItem(RHYME_CACHE_KEY, JSON.stringify(Object.fromEntries(entries)));
+  } catch (e) {}
+}
+
+function getRhymeCacheValue(key) {
+  if (!rhymeGuardConfig.useCache) return null;
+  const cache = readRhymeCache();
+  const item = cache[key];
+  if (!item) return null;
+  const ttl = 1000 * 60 * 60 * 24 * 7;
+  if (!item.ts || (Date.now() - item.ts > ttl)) return null;
+  return item.value || null;
+}
+
+function setRhymeCacheValue(key, value) {
+  if (!rhymeGuardConfig.useCache) return;
+  const cache = readRhymeCache();
+  cache[key] = {ts: Date.now(), value};
+  writeRhymeCache(cache);
+}
+
+function fetchWithTimeout(url, options, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const id = setTimeout(() => reject(new Error('Timeout API')), timeoutMs);
+    fetch(url, options)
+      .then(r => { clearTimeout(id); resolve(r); })
+      .catch(e => { clearTimeout(id); reject(e); });
+  });
+}
+
+function normalizeBackupGroups(rawGroups) {
+  if (!Array.isArray(rawGroups)) return [];
+  return rawGroups.map(g => {
+    if (Array.isArray(g) && g.length >= 2) {
+      const key = String(g[0] || '');
+      const count = Array.isArray(g[1]) ? g[1].length : Number(g[1]) || 0;
+      return [key, new Array(Math.max(0, count)).fill({})];
+    }
+    if (g && typeof g === 'object') {
+      const key = String(g.key || g.label || '');
+      const count = Number(g.count || g.size || 0);
+      return [key, new Array(Math.max(0, count)).fill({})];
+    }
+    return ['', []];
+  }).filter(x => x[0]);
+}
+
+function backupShouldRun(localResult) {
+  if (!rhymeGuardConfig.externalEnabled) return false;
+  if (!rhymeGuardConfig.endpoint || !rhymeGuardConfig.endpoint.trim()) return false;
+  if (isRhymeCircuitOpen()) return false;
+  if (rhymeGuardConfig.mode === 'local') return false;
+  if (rhymeGuardConfig.mode === 'api') return true;
+  return localResult.confidence < rhymeGuardConfig.hybridThreshold;
+}
+
+async function runBackupRhymeCheck(lyrics, localResult) {
+  if (!backupShouldRun(localResult)) return {...localResult, engine:'local', disagreement:false, decisionLog:[...(localResult.decisionLog||[]), 'Backup API non sollicitee']};
+
+  const payload = {
+    lyrics,
+    localScore: localResult.score,
+    localConfidence: localResult.confidence,
+    localStrictGroups: localResult.strictGroups.map(([k, arr]) => ({key:k, count:arr.length})),
+    localAssonanceGroups: localResult.assonanceGroups.map(([k, arr]) => ({key:k, count:arr.length}))
+  };
+  const cacheKey = hashString(`${rhymeGuardConfig.endpoint}|${lyrics}|${JSON.stringify(payload.localStrictGroups)}`);
+  const cached = getRhymeCacheValue(cacheKey);
+  if (cached) {
+    return {
+      ...localResult,
+      ...cached,
+      engine: 'hybrid-cache',
+      disagreement: !!cached.disagreement,
+      decisionLog: [...(localResult.decisionLog||[]), 'Backup API: resultat depuis cache']
+    };
+  }
+
+  try {
+    const headers = {'Content-Type':'application/json'};
+    if (rhymeGuardConfig.apiKey) headers['Authorization'] = `Bearer ${rhymeGuardConfig.apiKey}`;
+    const res = await fetchWithTimeout(rhymeGuardConfig.endpoint.trim(), {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload)
+    }, rhymeGuardConfig.timeoutMs);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    markRhymeApiSuccess();
+
+    const body = data && typeof data === 'object' ? (data.result || data.data || data) : {};
+    const remoteScore = Number(body.score);
+    const remoteConfidence = Number(body.confidence);
+    const strictGroups = normalizeBackupGroups(body.strictGroups || body.rhymeGroups || []);
+    const assonanceGroups = normalizeBackupGroups(body.assonanceGroups || []);
+
+    const mergedScore = Number.isFinite(remoteScore)
+      ? (rhymeGuardConfig.mode === 'api' ? Math.round(remoteScore) : Math.round((localResult.score * 0.6) + (remoteScore * 0.4)))
+      : localResult.score;
+    const merged = {
+      score: Number.isFinite(remoteScore)
+        ? mergedScore
+        : localResult.score,
+      confidence: Number.isFinite(remoteConfidence)
+        ? (rhymeGuardConfig.mode === 'api' ? Math.round(remoteConfidence) : Math.round((localResult.confidence * 0.6) + (remoteConfidence * 0.4)))
+        : localResult.confidence,
+      strictGroups: strictGroups.length ? strictGroups : localResult.strictGroups,
+      assonanceGroups: assonanceGroups.length ? assonanceGroups : localResult.assonanceGroups,
+      engine: 'hybrid-api',
+      disagreement: Number.isFinite(remoteScore) ? Math.abs(remoteScore - localResult.score) >= 20 : false,
+      decisionLog: [...(localResult.decisionLog||[]), 'Backup API: fusion des scores']
+    };
+    if (merged.disagreement) merged.decisionLog.push('Alerte: desaccord fort local/API');
+
+    setRhymeCacheValue(cacheKey, merged);
+    return {...localResult, ...merged};
+  } catch (e) {
+    markRhymeApiFailure(e.message || String(e));
+    return {
+      ...localResult,
+      engine: 'local-fallback',
+      disagreement: false,
+      decisionLog: [...(localResult.decisionLog||[]), `Backup API echec: ${String(e.message || e)}`]
+    };
+  }
 }
 
 // ─── AUTO-SAVE ─────────────────────────────
@@ -1224,19 +1429,24 @@ function applyRhymeTemplate(secId) {
   toast(`Trame ${tpl.id} appliquee`);
 }
 
-function detectRhymeForSection(secId, silent=false) {
+async function detectRhymeForSection(secId, silent=false) {
   const sec = sectionById(secId);
   const out = document.getElementById('rhymeReport');
   if (!sec || !out) return;
+  const requestToken = ++rhymeRequestToken;
 
-  const result = detectRhymesInLyrics(sec.lyrics || '');
-  if (!result.linesCount) {
+  const localResult = detectRhymesInLyrics(sec.lyrics || '');
+  if (!localResult.linesCount) {
     out.innerHTML = '<span style="color:var(--text3)">Aucune ligne analysee.</span>';
     if (!silent) toast('Aucune ligne a analyser', 'info');
     return;
   }
 
+  const result = await runBackupRhymeCheck(sec.lyrics || '', localResult);
+  if (requestToken !== rhymeRequestToken) return;
+
   const qualityClass = result.score >= 60 ? 'good' : (result.score >= 35 ? 'warn' : 'bad');
+  const confidenceClass = result.confidence >= 75 ? 'good' : (result.confidence >= 55 ? 'warn' : 'bad');
   const strictHtml = result.strictGroups.length
     ? result.strictGroups.slice(0, 6).map(([k, arr]) => `<span class="pill">${escHtml(k)} (${arr.length})</span>`).join('')
     : '<span class="pill">Aucune rime stricte</span>';
@@ -1244,17 +1454,25 @@ function detectRhymeForSection(secId, silent=false) {
     ? result.assonanceGroups.slice(0, 6).map(([k, arr]) => `<span class="pill">${escHtml(k)} (${arr.length})</span>`).join('')
     : '<span class="pill">Aucune assonance repetee</span>';
   const lineEnds = result.details.slice(0, 8).map(d => `<span class="pill">L${d.index}: ${escHtml(d.lastWord || '-')} → ${escHtml(d.strictKey || '-')}</span>`).join('');
+  const decisionTrace = (result.decisionLog || []).slice(0, 3).map(x => `<span class="pill">${escHtml(x)}</span>`).join('');
+  const disagreementWarn = result.disagreement
+    ? '<div style="margin-top:8px;color:#fca5a5;font-size:.76rem">Desaccord notable entre moteur local et API backup. Verifiez la section manuellement.</div>'
+    : '';
 
   out.innerHTML = `
     <div class="prosody-box">
       <div class="prosody-head">
         <strong>Rimes</strong>
         <span class="prosody-badge ${qualityClass}">Score ${result.score}/100</span>
+        <span class="prosody-badge ${confidenceClass}">Confiance ${result.confidence}/100</span>
         <span class="prosody-badge">${result.linesCount} lignes</span>
+        <span class="prosody-badge">Moteur ${escHtml(result.engine || 'local')}</span>
       </div>
       <div class="prosody-lines"><span class="pill">Rime stricte:</span>${strictHtml}</div>
       <div class="prosody-lines"><span class="pill">Assonance:</span>${assonanceHtml}</div>
       <div class="prosody-lines">${lineEnds}</div>
+      <div class="prosody-lines"><span class="pill">Trace:</span>${decisionTrace || '<span class="pill">Aucune</span>'}</div>
+      ${disagreementWarn}
       <div style="margin-top:6px;color:var(--text3);font-size:.75rem">Astuce SUNO: visez 40-70 pour garder impact et variete.</div>
     </div>
   `;
@@ -1564,13 +1782,26 @@ function detectRhymesInLyrics(lyrics) {
   const score = lines.length
     ? Math.round(((strictRepeated + (assonanceRepeated * 0.35)) / lines.length) * 100)
     : 0;
+  const confidenceBase = Math.min(35, lines.length * 5);
+  const confidenceRhyme = Math.min(35, strictGroups.length * 10);
+  const confidenceAss = Math.min(20, assonanceGroups.length * 6);
+  const lowDataPenalty = lines.length < 3 ? 12 : 0;
+  const confidence = Math.max(20, Math.min(95, confidenceBase + confidenceRhyme + confidenceAss - lowDataPenalty));
+
+  const decisionLog = [];
+  decisionLog.push(`Local: ${lines.length} ligne(s) analysee(s)`);
+  decisionLog.push(`Rimes strictes: ${strictGroups.length} groupe(s)`);
+  decisionLog.push(`Assonances: ${assonanceGroups.length} groupe(s)`);
 
   return {
     linesCount: lines.length,
     score,
+    confidence,
     strictGroups,
     assonanceGroups,
-    details: data
+    details: data,
+    engine: 'local',
+    decisionLog
   };
 }
 
@@ -2389,6 +2620,134 @@ function bulkAddMoodTag() {
   toast(`${changed} section(s) mises a jour`);
 }
 
+function currentRhymeGuardStatus() {
+  if (!rhymeGuardConfig.externalEnabled) return 'Backup desactive (local uniquement).';
+  if (!rhymeGuardConfig.endpoint) return 'Backup actif mais endpoint non renseigne.';
+  if (isRhymeCircuitOpen()) {
+    const sec = Math.max(0, Math.round((rhymeApiState.circuitOpenUntil - Date.now()) / 1000));
+    return `Circuit ouvert (${sec}s restantes) apres ${rhymeApiState.failures} echec(s).`;
+  }
+  if (rhymeApiState.failures > 0) return `Mode degrade: ${rhymeApiState.failures} echec(s) API.`;
+  return 'Pipeline hybride operationnel.';
+}
+
+function syncRhymeGuardUI() {
+  const modeEl = document.getElementById('rgMode');
+  const extEl = document.getElementById('rgExternalEnabled');
+  const endpointEl = document.getElementById('rgEndpoint');
+  const keyEl = document.getElementById('rgApiKey');
+  const timeoutEl = document.getElementById('rgTimeout');
+  const thresholdEl = document.getElementById('rgThreshold');
+  const cacheEl = document.getElementById('rgUseCache');
+  const timeoutLabel = document.getElementById('rgTimeoutLabel');
+  const thresholdLabel = document.getElementById('rgThresholdLabel');
+  const statusEl = document.getElementById('rhymeGuardStatus');
+
+  if (modeEl) modeEl.value = rhymeGuardConfig.mode;
+  if (extEl) extEl.checked = !!rhymeGuardConfig.externalEnabled;
+  if (endpointEl) endpointEl.value = rhymeGuardConfig.endpoint || '';
+  if (keyEl) keyEl.value = rhymeGuardConfig.apiKey || '';
+  if (timeoutEl) timeoutEl.value = String(rhymeGuardConfig.timeoutMs || 900);
+  if (thresholdEl) thresholdEl.value = String(rhymeGuardConfig.hybridThreshold || 62);
+  if (cacheEl) cacheEl.checked = !!rhymeGuardConfig.useCache;
+  if (timeoutLabel) timeoutLabel.textContent = `${rhymeGuardConfig.timeoutMs} ms`;
+  if (thresholdLabel) thresholdLabel.textContent = `${rhymeGuardConfig.hybridThreshold}/100`;
+  if (statusEl) statusEl.textContent = currentRhymeGuardStatus();
+  previewRhymeGuardUI();
+}
+
+function previewRhymeGuardUI() {
+  const extEl = document.getElementById('rgExternalEnabled');
+  const endpointEl = document.getElementById('rgEndpoint');
+  const keyEl = document.getElementById('rgApiKey');
+  const timeoutEl = document.getElementById('rgTimeout');
+  const thresholdEl = document.getElementById('rgThreshold');
+  const timeoutLabel = document.getElementById('rgTimeoutLabel');
+  const thresholdLabel = document.getElementById('rgThresholdLabel');
+  const modeEl = document.getElementById('rgMode');
+
+  const ext = !!(extEl && extEl.checked);
+  if (endpointEl) endpointEl.disabled = !ext;
+  if (keyEl) keyEl.disabled = !ext;
+  if (timeoutEl && timeoutLabel) timeoutLabel.textContent = `${timeoutEl.value} ms`;
+  if (thresholdEl && thresholdLabel) thresholdLabel.textContent = `${thresholdEl.value}/100`;
+  if (thresholdEl && modeEl) thresholdEl.disabled = modeEl.value !== 'hybrid';
+}
+
+function saveRhymeGuardFromUI() {
+  const modeEl = document.getElementById('rgMode');
+  const extEl = document.getElementById('rgExternalEnabled');
+  const endpointEl = document.getElementById('rgEndpoint');
+  const keyEl = document.getElementById('rgApiKey');
+  const timeoutEl = document.getElementById('rgTimeout');
+  const thresholdEl = document.getElementById('rgThreshold');
+  const cacheEl = document.getElementById('rgUseCache');
+
+  rhymeGuardConfig.mode = modeEl ? modeEl.value : rhymeGuardConfig.mode;
+  rhymeGuardConfig.externalEnabled = !!(extEl && extEl.checked);
+  rhymeGuardConfig.endpoint = endpointEl ? endpointEl.value.trim() : rhymeGuardConfig.endpoint;
+  rhymeGuardConfig.apiKey = keyEl ? keyEl.value.trim() : rhymeGuardConfig.apiKey;
+  rhymeGuardConfig.timeoutMs = Math.max(300, Math.min(2500, Number(timeoutEl?.value || rhymeGuardConfig.timeoutMs)));
+  rhymeGuardConfig.hybridThreshold = Math.max(35, Math.min(90, Number(thresholdEl?.value || rhymeGuardConfig.hybridThreshold)));
+  rhymeGuardConfig.useCache = !!(cacheEl && cacheEl.checked);
+
+  saveRhymeGuardConfig();
+  syncRhymeGuardUI();
+  toast('Garde-fous sauvegardes');
+  setStatus(`Rimes: mode ${rhymeGuardConfig.mode}, timeout ${rhymeGuardConfig.timeoutMs}ms`);
+}
+
+async function testRhymeBackupApi() {
+  saveRhymeGuardFromUI();
+  if (!rhymeGuardConfig.externalEnabled) {
+    toast('Activez le backup externe pour tester', 'info');
+    return;
+  }
+  if (!rhymeGuardConfig.endpoint) {
+    toast('Endpoint API manquant', 'error');
+    return;
+  }
+
+  try {
+    const headers = {'Content-Type':'application/json'};
+    if (rhymeGuardConfig.apiKey) headers['Authorization'] = `Bearer ${rhymeGuardConfig.apiKey}`;
+    const res = await fetchWithTimeout(rhymeGuardConfig.endpoint, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ping:true, lyrics:'Test rimes Suno'})
+    }, rhymeGuardConfig.timeoutMs);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    markRhymeApiSuccess();
+    syncRhymeGuardUI();
+    toast('API backup joignable');
+  } catch (e) {
+    markRhymeApiFailure(e.message || String(e));
+    syncRhymeGuardUI();
+    toast(`Test API echoue: ${String(e.message || e)}`, 'error');
+  }
+}
+
+function resetRhymeGuardConfig() {
+  rhymeGuardConfig = {
+    mode: 'hybrid',
+    externalEnabled: false,
+    endpoint: '',
+    apiKey: '',
+    timeoutMs: 900,
+    hybridThreshold: 62,
+    useCache: true
+  };
+  rhymeApiState = {failures:0, circuitOpenUntil:0, lastError:''};
+  saveRhymeGuardConfig();
+  syncRhymeGuardUI();
+  toast('Garde-fous reinitialises');
+}
+
+function clearRhymeCache() {
+  try { localStorage.removeItem(RHYME_CACHE_KEY); } catch (e) {}
+  toast('Cache des rimes vide');
+}
+
 function renderStudioPanel() {
   const area = document.getElementById('studioArea');
   const headline = document.getElementById('studioHeadline');
@@ -2466,6 +2825,47 @@ function renderStudioPanel() {
     </section>
 
     <section class="studio-card">
+      <h4>Garde-fous Rimes IA</h4>
+      <div class="studio-row" style="margin-bottom:8px">
+        <label style="font-size:.78rem;color:var(--text2)">Mode analyse</label>
+        <select id="rgMode" onchange="previewRhymeGuardUI()">
+          <option value="local">Local uniquement</option>
+          <option value="hybrid">Hybride (fallback si confiance basse)</option>
+          <option value="api">API prioritaire + fallback local</option>
+        </select>
+      </div>
+      <div class="studio-row" style="margin-bottom:8px">
+        <label style="font-size:.78rem;color:var(--text2)">Backup externe</label>
+        <input id="rgExternalEnabled" type="checkbox" onchange="previewRhymeGuardUI()">
+        <label style="font-size:.78rem;color:var(--text2)">Cache local</label>
+        <input id="rgUseCache" type="checkbox" onchange="previewRhymeGuardUI()">
+      </div>
+      <div class="studio-row" style="margin-bottom:8px">
+        <input id="rgEndpoint" type="text" placeholder="https://.../rhyme-check">
+      </div>
+      <div class="studio-row" style="margin-bottom:8px">
+        <input id="rgApiKey" type="password" placeholder="Bearer token optionnel">
+      </div>
+      <div class="studio-row" style="margin-bottom:8px">
+        <label style="font-size:.78rem;color:var(--text2)">Timeout</label>
+        <input id="rgTimeout" type="range" min="300" max="2500" step="100" oninput="previewRhymeGuardUI()">
+        <span id="rgTimeoutLabel" class="meta">900 ms</span>
+      </div>
+      <div class="studio-row" style="margin-bottom:8px">
+        <label style="font-size:.78rem;color:var(--text2)">Seuil fallback hybride</label>
+        <input id="rgThreshold" type="range" min="35" max="90" step="1" oninput="previewRhymeGuardUI()">
+        <span id="rgThresholdLabel" class="meta">62/100</span>
+      </div>
+      <div id="rhymeGuardStatus" class="meta" style="margin-bottom:8px"></div>
+      <div class="studio-row">
+        <button class="btn small primary" onclick="saveRhymeGuardFromUI()">Sauvegarder</button>
+        <button class="btn small" onclick="testRhymeBackupApi()">Tester API</button>
+        <button class="btn small" onclick="clearRhymeCache()">Vider cache</button>
+        <button class="btn small danger" onclick="resetRhymeGuardConfig()">Reset</button>
+      </div>
+    </section>
+
+    <section class="studio-card">
       <h4>Versions Snapshot</h4>
       <div class="studio-row">
         <button class="btn small primary" onclick="saveSnapshot()">Sauver un snapshot</button>
@@ -2501,6 +2901,7 @@ function renderStudioPanel() {
     </section>`;
 
   loadLayoutPrefs();
+  syncRhymeGuardUI();
 }
 
 // ═══════════════════════════════════════════

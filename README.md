@@ -47,6 +47,10 @@ Aucune dependance, aucun build, aucune installation.
   - auto-fix sur incoherences courantes
 - Onglet `Studio`:
   - workflow presets preconfigures (duo pop, rap battle, epic choir, ballade acoustique)
+  - garde-fous IA des rimes (mode local, hybride, API prioritaire)
+  - backup API optionnel (endpoint + token + timeout)
+  - circuit breaker automatique apres echecs consecutifs
+  - cache local des analyses externes
   - snapshots de versions (sauvegarde / chargement / suppression)
   - operations batch (assignation et tags d'ambiance par type de section)
   - nettoyage global des paroles
@@ -67,10 +71,18 @@ Aucune dependance, aucun build, aucune installation.
   - templates de rimes (AABB, ABAB, ABBA, AAAA, etc.)
   - detecteur de rimes stabilise (rime stricte + assonance)
   - score + groupes de finales + details ligne par ligne
+  - score de confiance (0-100)
+  - trace de decision (local / cache / API)
+  - alerte de desaccord fort entre moteur local et backup API
 - Compteur de syllabes (dans l'editeur de section):
   - analyse locale heuristique FR (sans API)
   - syllabes moyennes par ligne
   - regularite metrique (ecart-type + barres visuelles par ligne)
+
+- Strategie de robustesse (local-first):
+  - le moteur local reste prioritaire et fonctionne hors-ligne
+  - en mode hybride, l'API backup ne s'active que si la confiance locale est basse
+  - en mode API prioritaire, fallback local automatique en cas d'echec/timeout
 
 - Personnalisation de lisibilite (onglet Studio):
   - ajustement largeur panneau gauche
