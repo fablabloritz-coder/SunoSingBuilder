@@ -1447,13 +1447,18 @@ async function detectRhymeForSection(secId, silent=false) {
 
   const qualityClass = result.score >= 60 ? 'good' : (result.score >= 35 ? 'warn' : 'bad');
   const confidenceClass = result.confidence >= 75 ? 'good' : (result.confidence >= 55 ? 'warn' : 'bad');
+  const isAI = result.engine === 'embedded-ai';
   const strictHtml = result.strictGroups.length
     ? result.strictGroups.slice(0, 6).map(([k, arr]) => `<span class="pill">${escHtml(k)} (${arr.length})</span>`).join('')
-    : '<span class="pill">Aucune rime stricte</span>';
+    : '<span class="pill">Aucune rime exacte</span>';
   const assonanceHtml = result.assonanceGroups.length
     ? result.assonanceGroups.slice(0, 6).map(([k, arr]) => `<span class="pill">${escHtml(k)} (${arr.length})</span>`).join('')
-    : '<span class="pill">Aucune assonance repetee</span>';
-  const lineEnds = result.details.slice(0, 8).map(d => `<span class="pill">L${d.index}: ${escHtml(d.lastWord || '-')} → ${escHtml(d.strictKey || '-')}</span>`).join('');
+    : `<span class="pill">Aucune ${isAI ? 'quasi-rime' : 'assonance'}</span>`;
+  // Afficher noyaux phonetiques si moteur IA
+  const lineEnds = result.details.slice(0, 8).map(d => {
+    const nucleus = d.nucleus ? d.nucleus.join('') : d.strictKey || '-';
+    return `<span class="pill">L${d.index}: ${escHtml(d.lastWord || '-')} → <em>${escHtml(nucleus)}</em></span>`;
+  }).join('');
   const decisionTrace = (result.decisionLog || []).slice(0, 3).map(x => `<span class="pill">${escHtml(x)}</span>`).join('');
   const disagreementWarn = result.disagreement
     ? '<div style="margin-top:8px;color:#fca5a5;font-size:.76rem">Desaccord notable entre moteur local et API backup. Verifiez la section manuellement.</div>'
@@ -1468,8 +1473,8 @@ async function detectRhymeForSection(secId, silent=false) {
         <span class="prosody-badge">${result.linesCount} lignes</span>
         <span class="prosody-badge">Moteur ${escHtml(result.engine || 'local')}</span>
       </div>
-      <div class="prosody-lines"><span class="pill">Rime stricte:</span>${strictHtml}</div>
-      <div class="prosody-lines"><span class="pill">Assonance:</span>${assonanceHtml}</div>
+      <div class="prosody-lines"><span class="pill">Rime exacte:</span>${strictHtml}</div>
+      <div class="prosody-lines"><span class="pill">${isAI ? 'Quasi-rimes IA:' : 'Assonance:'}</span>${assonanceHtml}</div>
       <div class="prosody-lines">${lineEnds}</div>
       <div class="prosody-lines"><span class="pill">Trace:</span>${decisionTrace || '<span class="pill">Aucune</span>'}</div>
       ${disagreementWarn}
@@ -1690,119 +1695,249 @@ function analyzeSyllablesInLyrics(lyrics) {
   };
 }
 
-function normalizeForFrenchRhyme(word) {
-  const w = normalizeWordForRhyme(word);
-  if (!w) return '';
+// ═══════════════════════════════════════════════════════════════
+// MOTEUR IA RIMEUR EMBARQUE — FR_AI v1
+// G2P phonetique + vecteurs de traits + quasi-rimes
+// Aucune dependance, 100% offline, integre dans le navigateur
+// ═══════════════════════════════════════════════════════════════
+const FR_AI = (() => {
+  'use strict';
 
-  // Nettoyage des finales tres souvent muettes.
-  if (w.length > 3) {
-    return w
-      .replace(/(es|s|x)$/g, '')
-      .replace(/(ent)$/g, '');
+  // 1. Normalisation graphemique (accents → ASCII, minuscules)
+  function norm(w) {
+    return (w || '').toLowerCase()
+      .replace(/[àâä]/g, 'a').replace(/[éèêë]/g, 'e')
+      .replace(/[îï]/g, 'i').replace(/[ôö]/g, 'o')
+      .replace(/[ûùü]/g, 'u').replace(/ç/g, 's')
+      .replace(/œ/g, 'oe').replace(/æ/g, 'ae')
+      .replace(/[^a-z]/g, '');
   }
-  return w;
-}
 
-function strictRhymeKey(word) {
-  const w = normalizeForFrenchRhyme(word);
-  if (!w) return '';
+  function isVowelChar(c) { return 'aeiouy'.includes(c || ''); }
 
-  // Heuristiques FR pour eviter les faux positifs trop agressifs.
-  if (/(tion|sion|xion)$/.test(w)) return 'ion';
-  if (/(eur|euse)$/.test(w)) return 'eur';
-  if (/(ance|anse|ence|ense)$/.test(w)) return 'ans';
-  if (/(ique)$/.test(w)) return 'ik';
-  if (/(oire|oir)$/.test(w)) return 'war';
-  if (/(eau|au|o)$/.test(w)) return 'o';
-  if (/(ou)$/.test(w)) return 'u';
-  if (/(in|ain|ein|im|aim)$/.test(w)) return 'in';
-  if (/(on|om)$/.test(w)) return 'on';
-  if (/(an|am|en|em)$/.test(w)) return 'an';
-  if (/(er|ez|e)$/.test(w)) return 'e';
+  // 2. Graphème → Phonème IPA simplifié
+  function g2p(raw) {
+    const w = norm(raw);
+    if (!w) return [];
+    const out = [];
+    let i = 0;
+    const L = w.length;
 
-  return w.slice(-3);
-}
+    while (i < L) {
+      const r = w.slice(i);
 
-function assonanceKey(word) {
-  const w = normalizeForFrenchRhyme(word);
-  if (!w) return '';
-  const vowels = 'aeiouy';
-  let idx = -1;
-  for (let i = w.length - 1; i >= 0; i--) {
-    if (vowels.includes(w[i])) {
-      idx = i;
-      break;
+      // ─── Séquences 4 chars ───
+      if (r.startsWith('tion')) { out.push('s','j','ɔ̃'); i += 4; continue; }
+      if (r.startsWith('sion')) { out.push('z','j','ɔ̃'); i += 4; continue; }
+
+      // ─── Séquences 3 chars ───
+      if (r.startsWith('eau')) { out.push('o'); i += 3; continue; }
+      if (r.startsWith('oeu')) { out.push('œ'); i += 3; continue; }
+      if (r.startsWith('oin')) { out.push('wɛ̃'); i += 3; continue; }
+      if (r.startsWith('ien') && !isVowelChar(w[i+3]||'')) { out.push('j','ɛ̃'); i += 3; continue; }
+      if (r.startsWith('ieu')) { out.push('j','ø'); i += 3; continue; }
+      if (r.startsWith('ion')) { out.push('j','ɔ̃'); i += 3; continue; }
+      if (r.startsWith('ill')) { out.push('ij'); i += 3; continue; }
+      if (r.startsWith('ain') || r.startsWith('aim')) { out.push('ɛ̃'); i += 3; continue; }
+      if (r.startsWith('ein')) { out.push('ɛ̃'); i += 3; continue; }
+
+      // ─── Séquences 2 chars ───
+      if (r.startsWith('gn')) { out.push('ɲ'); i += 2; continue; }
+      if (r.startsWith('qu')) { out.push('k'); i += 2; continue; }
+      if (r.startsWith('ch')) { out.push('ʃ'); i += 2; continue; }
+      if (r.startsWith('ph')) { out.push('f'); i += 2; continue; }
+      if (r.startsWith('ss')) { out.push('s'); i += 2; continue; }
+      if (r.startsWith('ou')) { out.push('u'); i += 2; continue; }
+      if (r.startsWith('oi')) { out.push('wa'); i += 2; continue; }
+      if (r.startsWith('eu')) { out.push('ø'); i += 2; continue; }
+      if (r.startsWith('au')) { out.push('o'); i += 2; continue; }
+      if (r.startsWith('ai') || r.startsWith('ei')) { out.push('ɛ'); i += 2; continue; }
+      if (r.startsWith('ui')) { out.push('ɥi'); i += 2; continue; }
+      if ((r.startsWith('an') || r.startsWith('am')) && !isVowelChar(w[i+2]||'')) { out.push('ɑ̃'); i += 2; continue; }
+      if ((r.startsWith('en') || r.startsWith('em')) && !isVowelChar(w[i+2]||'')) { out.push('ɑ̃'); i += 2; continue; }
+      if ((r.startsWith('in') || r.startsWith('im')) && !isVowelChar(w[i+2]||'')) { out.push('ɛ̃'); i += 2; continue; }
+      if ((r.startsWith('on') || r.startsWith('om')) && !isVowelChar(w[i+2]||'')) { out.push('ɔ̃'); i += 2; continue; }
+      if ((r.startsWith('un') || r.startsWith('um')) && !isVowelChar(w[i+2]||'')) { out.push('ɛ̃'); i += 2; continue; }
+      if (r.startsWith('il') && !isVowelChar(w[i+2]||'') && i > 0) { out.push('ij'); i += 2; continue; }
+
+      // ─── Caractère seul ───
+      const c = w[i];
+      const isLast = (i === L - 1);
+      switch (c) {
+        case 'a': out.push('a'); break;
+        case 'e': out.push(isLast ? 'ə' : 'ə'); break;
+        case 'i': out.push('i'); break;
+        case 'o': out.push('ɔ'); break;
+        case 'u': out.push('y'); break; // FR u = [y]
+        case 'y': out.push('i'); break;
+        case 'b': out.push('b'); break;
+        case 'c': out.push('eiys'.includes(w[i+1]||'') ? 's' : 'k'); break;
+        case 'd': if (!isLast) out.push('d'); break;  // d final muet
+        case 'f': if (!isLast) out.push('f'); break;  // f final muet
+        case 'g': out.push('eiys'.includes(w[i+1]||'') ? 'ʒ' : 'g'); break;
+        case 'h': break; // muet
+        case 'j': out.push('ʒ'); break;
+        case 'k': out.push('k'); break;
+        case 'l': if (!isLast) out.push('l'); break;  // l final souvent muet
+        case 'm': out.push('m'); break;
+        case 'n': out.push('n'); break;
+        case 'p': if (!isLast) out.push('p'); break;  // p final muet
+        case 'q': out.push('k'); break;
+        case 'r': out.push('ʀ'); break;
+        case 's': {
+          if (isLast) break; // s final muet
+          const prev = w[i-1]||'', nxt = w[i+1]||'';
+          out.push(isVowelChar(prev) && isVowelChar(nxt) ? 'z' : 's');
+          break;
+        }
+        case 't': if (!isLast) out.push('t'); break;  // t final muet
+        case 'v': out.push('v'); break;
+        case 'w': out.push('v'); break;
+        case 'x': if (!isLast) out.push('k','s'); break;
+        case 'z': out.push('z'); break;
+        default: break;
+      }
+      i++;
     }
+    return out;
   }
-  if (idx === -1) return w.slice(-2);
-  return w.slice(Math.max(0, idx - 1));
-}
 
-function detectRhymesInLyrics(lyrics) {
-  const lines = (lyrics || '').split('\n').map(l => l.trim()).filter(Boolean);
-  const data = [];
+  // 3. Noyau rimique = dernière voyelle + consonnes suivantes
+  const VOWELS_SET = new Set([
+    'a','ə','i','ɔ','y','u','o','ø','œ','ɛ',
+    'ɑ̃','ɛ̃','ɔ̃','wa','wɛ̃','jɔ̃','j','ɥi','ij'
+  ]);
 
-  lines.forEach((line, idx) => {
-    const words = line.split(/\s+/).filter(Boolean);
-    const last = words.length ? words[words.length - 1] : '';
-    const strictKey = strictRhymeKey(last);
-    const vowelKey = assonanceKey(last);
-    data.push({
-      index: idx + 1,
-      line,
-      lastWord: normalizeWordForRhyme(last),
-      strictKey,
-      vowelKey
-    });
-  });
-
-  const strictMap = {};
-  const assonanceMap = {};
-  data.forEach(d => {
-    if (d.strictKey) {
-      if (!strictMap[d.strictKey]) strictMap[d.strictKey] = [];
-      strictMap[d.strictKey].push(d);
+  function nucleus(phonemes) {
+    let last = -1;
+    for (let j = phonemes.length - 1; j >= 0; j--) {
+      if (VOWELS_SET.has(phonemes[j])) { last = j; break; }
     }
-    if (d.vowelKey) {
-      if (!assonanceMap[d.vowelKey]) assonanceMap[d.vowelKey] = [];
-      assonanceMap[d.vowelKey].push(d);
-    }
-  });
+    if (last === -1) return phonemes.slice(-2);
+    return phonemes.slice(last);
+  }
 
-  const strictGroups = Object.entries(strictMap)
-    .filter(([, arr]) => arr.length >= 2)
-    .sort((a, b) => b[1].length - a[1].length);
-
-  const assonanceGroups = Object.entries(assonanceMap)
-    .filter(([, arr]) => arr.length >= 2)
-    .sort((a, b) => b[1].length - a[1].length);
-
-  const strictRepeated = strictGroups.reduce((acc, [, arr]) => acc + arr.length, 0);
-  const assonanceRepeated = assonanceGroups.reduce((acc, [, arr]) => acc + arr.length, 0);
-  const score = lines.length
-    ? Math.round(((strictRepeated + (assonanceRepeated * 0.35)) / lines.length) * 100)
-    : 0;
-  const confidenceBase = Math.min(35, lines.length * 5);
-  const confidenceRhyme = Math.min(35, strictGroups.length * 10);
-  const confidenceAss = Math.min(20, assonanceGroups.length * 6);
-  const lowDataPenalty = lines.length < 3 ? 12 : 0;
-  const confidence = Math.max(20, Math.min(95, confidenceBase + confidenceRhyme + confidenceAss - lowDataPenalty));
-
-  const decisionLog = [];
-  decisionLog.push(`Local: ${lines.length} ligne(s) analysee(s)`);
-  decisionLog.push(`Rimes strictes: ${strictGroups.length} groupe(s)`);
-  decisionLog.push(`Assonances: ${assonanceGroups.length} groupe(s)`);
-
-  return {
-    linesCount: lines.length,
-    score,
-    confidence,
-    strictGroups,
-    assonanceGroups,
-    details: data,
-    engine: 'local',
-    decisionLog
+  // 4. Vecteurs de traits phonémiques [nasal, rond, avant, hauteur, voisé, consonne]
+  const PV = {
+    'a':[0,0,0,1,1,0],'ə':[0,0,1,2,1,0],'i':[0,0,1,4,1,0],
+    'ɔ':[0,1,0,2,1,0],'o':[0,1,0,3,1,0],'y':[0,1,1,4,1,0],
+    'u':[0,1,0,4,1,0],'ø':[0,1,1,3,1,0],'œ':[0,1,1,2,1,0],
+    'ɛ':[0,0,1,2,1,0],'ɑ̃':[1,0,0,1,1,0],'ɛ̃':[1,0,1,2,1,0],
+    'ɔ̃':[1,1,0,2,1,0],'wa':[0,0,0,1,1,0],'wɛ̃':[1,0,0,2,1,0],
+    'jɔ̃':[1,1,0,2,1,0],'j':[0,0,1,0,1,1],'ɥi':[0,1,1,4,1,0],'ij':[0,0,1,4,1,0],
+    'b':[0,0,0,0,1,1],'p':[0,0,0,0,0,1],'d':[0,0,1,0,1,1],'t':[0,0,1,0,0,1],
+    'g':[0,0,0,0,1,1],'k':[0,0,0,0,0,1],'f':[0,0,0,0,0,1],'v':[0,0,0,0,1,1],
+    's':[0,0,1,0,0,1],'z':[0,0,1,0,1,1],'ʃ':[0,0,0,0,0,1],'ʒ':[0,0,0,0,1,1],
+    'ʀ':[0,0,0,0,1,1],'l':[0,0,1,0,1,1],'m':[1,0,0,0,1,1],'n':[1,0,1,0,1,1],
+    'ɲ':[1,0,1,0,1,1],'w':[0,1,0,0,1,1]
   };
+
+  function pv(p) { return PV[p] || [0,0,0,0,0,1]; }
+
+  function cosSim(v1, v2) {
+    let dot = 0, m1 = 0, m2 = 0;
+    for (let k = 0; k < v1.length; k++) { dot += v1[k]*v2[k]; m1 += v1[k]*v1[k]; m2 += v2[k]*v2[k]; }
+    return (!m1 || !m2) ? 0 : dot / (Math.sqrt(m1) * Math.sqrt(m2));
+  }
+
+  // 5. Similarité de rime entre deux mots (0.0 – 1.0)
+  function rhymeSim(w1, w2) {
+    const n1 = nucleus(g2p(w1));
+    const n2 = nucleus(g2p(w2));
+    if (!n1.length || !n2.length) return 0;
+    if (n1.join('') === n2.join('')) return 1.0;
+    // Voyelle principale (poids 0.65) + queue consonantique (0.35)
+    const vs = cosSim(pv(n1[0]), pv(n2[0]));
+    const t1 = n1.slice(1).join(''), t2 = n2.slice(1).join('');
+    const cs = t1 === t2 ? 1.0 : (t1 === '' || t2 === '') ? 0.4 : 0.1;
+    return vs * 0.65 + cs * 0.35;
+  }
+
+  // 6. Analyser les rimes d'un bloc de paroles
+  function detectRhymes(lyrics) {
+    const lines = (lyrics || '').split('\n').map(l => l.trim()).filter(Boolean);
+    if (!lines.length) return {
+      linesCount: 0, score: 0, confidence: 0,
+      strictGroups: [], assonanceGroups: [], details: [],
+      engine: 'embedded-ai', decisionLog: ['Aucune ligne']
+    };
+
+    const data = lines.map((line, idx) => {
+      const words = line.split(/\s+/).filter(Boolean);
+      const last = words[words.length - 1] || '';
+      const ph = g2p(last);
+      const nc = nucleus(ph);
+      const ncKey = nc.join('');
+      return { index: idx+1, line, lastWord: last, strictKey: ncKey, vowelKey: nc[0]||'', phonemes: ph, nucleus: nc };
+    });
+
+    // Groupes de rime exacte (noyau identique)
+    const strictMap = {};
+    data.forEach(d => {
+      const k = d.strictKey || '_';
+      if (!strictMap[k]) strictMap[k] = [];
+      strictMap[k].push(d);
+    });
+    const strictGroups = Object.entries(strictMap)
+      .filter(([, a]) => a.length >= 2)
+      .sort((a, b) => b[1].length - a[1].length);
+
+    // Quasi-rimes (similarité ≥ 0.65, noyaux différents)
+    const nearPairs = [];
+    const usedKeys = new Set();
+    for (let i = 0; i < data.length; i++) {
+      for (let j = i + 1; j < data.length; j++) {
+        const di = data[i], dj = data[j];
+        if (di.strictKey === dj.strictKey) continue;
+        const sim = rhymeSim(di.lastWord, dj.lastWord);
+        if (sim >= 0.65) {
+          const pKey = [di.strictKey, dj.strictKey].sort().join('|');
+          if (!usedKeys.has(pKey)) {
+            usedKeys.add(pKey);
+            nearPairs.push({ key: `${di.lastWord}~${dj.lastWord}`, sim, items: [di, dj] });
+          }
+        }
+      }
+    }
+    nearPairs.sort((a, b) => b.sim - a.sim);
+    const assonanceGroups = nearPairs.slice(0, 8).map(p => [p.key, p.items]);
+
+    // Score global
+    const strictR = strictGroups.reduce((a, [, ar]) => a + ar.length, 0);
+    const nearR = nearPairs.reduce((a, p) => a + p.items.length, 0);
+    const score = Math.min(100, Math.round((strictR * 1.0 + nearR * 0.4) / lines.length * 100));
+
+    // Confiance (qualite de l'analyse en fonction des donnees)
+    const conf = Math.min(95, Math.max(20,
+      30
+      + Math.min(20, lines.length * 5)
+      + (strictGroups.length >= 2 ? 25 : strictGroups.length * 12)
+      + (nearPairs.length >= 1 ? 15 : 0)
+      - (lines.length < 3 ? 10 : 0)
+    ));
+
+    return {
+      linesCount: lines.length,
+      score,
+      confidence: conf,
+      strictGroups,
+      assonanceGroups,
+      details: data,
+      engine: 'embedded-ai',
+      decisionLog: [
+        `IA embarquee: ${lines.length} ligne(s) analysee(s)`,
+        `Rimes exactes: ${strictGroups.length} groupe(s)`,
+        `Quasi-rimes: ${nearPairs.length} paire(s) (sim≥0.65)`
+      ]
+    };
+  }
+
+  return { g2p, nucleus, rhymeSim, detectRhymes, version: '1.0' };
+})();
+
+// Pont de compatibilite: detectRhymesInLyrics delegue au moteur IA embarque
+function detectRhymesInLyrics(lyrics) {
+  return FR_AI.detectRhymes(lyrics);
 }
 
 function renderSunoTextWithMode(mode='balanced') {
@@ -2748,6 +2883,41 @@ function clearRhymeCache() {
   toast('Cache des rimes vide');
 }
 
+function testFrAiInBrowser() {
+  const pairs = [
+    ['chanter',  'aimer',   'proche (e)'],
+    ['amour',    'toujours','exacte (uʀ)'],
+    ['nuit',     'vie',     'quasi (i/ɥi)'],
+    ['coeur',    'bonheur', 'exacte (œʀ)'],
+    ['passion',  'chanson', 'quasi (ɔ̃)'],
+    ['lumiere',  'riviere', 'exacte (jɛʀ)'],
+    ['chanter',  'manger',  'proche (e)'],
+    ['preciser', 'devotion','differente']
+  ];
+  const rows = pairs.map(([w1, w2, expected]) => {
+    const sim = FR_AI.rhymeSim(w1, w2);
+    const ph1 = FR_AI.nucleus(FR_AI.g2p(w1)).join('');
+    const ph2 = FR_AI.nucleus(FR_AI.g2p(w2)).join('');
+    const simLabel = sim >= 0.95 ? 'Exacte' : sim >= 0.65 ? 'Quasi' : 'Differente';
+    return `<tr><td>${escHtml(w1)}</td><td>${escHtml(w2)}</td><td><em>${escHtml(ph1)}</em></td><td><em>${escHtml(ph2)}</em></td><td>${(sim*100).toFixed(0)}%</td><td>${simLabel}</td><td style="color:var(--text3)">${escHtml(expected)}</td></tr>`;
+  }).join('');
+
+  const win = window.open('', '_blank', 'width=680,height=440,resizable=yes');
+  if (!win) { toast('Popup bloque par le navigateur', 'error'); return; }
+  win.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Test FR_AI</title>
+    <style>body{font-family:sans-serif;padding:16px;background:#1a1a2e;color:#e2e8f0}
+    h2{color:#60a5fa}table{width:100%;border-collapse:collapse}
+    th,td{padding:6px 10px;text-align:left;border-bottom:1px solid #334155}
+    th{color:#94a3b8;font-weight:600}em{color:#a78bfa}</style></head>
+    <body><h2>Moteur FR_AI — Test phonetique</h2>
+    <table><thead><tr><th>Mot 1</th><th>Mot 2</th><th>Noyau 1</th><th>Noyau 2</th><th>Sim.</th><th>Verdict</th><th>Attendu</th></tr></thead>
+    <tbody>${rows}</tbody></table>
+    <p style="color:#64748b;font-size:.8rem;margin-top:12px">G2P + vecteurs phonemiques — FR_AI v${FR_AI.version}</p>
+    </body></html>`);
+  win.document.close();
+  setStatus('Test FR_AI ouvert dans une fenetre');
+}
+
 function renderStudioPanel() {
   const area = document.getElementById('studioArea');
   const headline = document.getElementById('studioHeadline');
@@ -2825,7 +2995,17 @@ function renderStudioPanel() {
     </section>
 
     <section class="studio-card">
-      <h4>Garde-fous Rimes IA</h4>
+      <h4>Moteur IA Rimeur</h4>
+      <div class="studio-row" style="margin-bottom:6px">
+        <span class="prosody-badge good" style="font-size:.76rem">IA embarquee v${FR_AI.version}</span>
+        <span class="meta">G2P phonetique + vecteurs de traits, 100% offline</span>
+      </div>
+      <div class="meta" style="margin-bottom:4px">Detection des rimes exactes (noyau phonemique identique) et quasi-rimes (similarite vectorielle ≥ 65%). Aucune inscription, aucune API requise.</div>
+      <button class="btn small" onclick="testFrAiInBrowser()">Tester le moteur IA</button>
+    </section>
+
+    <section class="studio-card">
+      <h4>Garde-fous Rimes (backup API optionnel)</h4>
       <div class="studio-row" style="margin-bottom:8px">
         <label style="font-size:.78rem;color:var(--text2)">Mode analyse</label>
         <select id="rgMode" onchange="previewRhymeGuardUI()">
